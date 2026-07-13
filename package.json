@@ -1,0 +1,43 @@
+{
+  "name": "@drawsy/ai-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "description": "Canvas-scoped Drawsy MCP and local Codex app-server bridge",
+  "license": "MIT",
+  "main": "dist/drawsy/mcp.js",
+  "bin": {
+    "drawsy-ai-mcp": "dist/drawsy/mcp.js",
+    "drawsy-ai-bridge": "dist/drawsy/bridge-main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./dist/drawsy/mcp.js",
+    "./bridge": "./dist/drawsy/bridge.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.drawsy.json",
+    "dev": "tsc -p tsconfig.drawsy.json && node --watch dist/drawsy/bridge-main.js",
+    "start": "node dist/drawsy/bridge-main.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/drawsy/*.test.js",
+    "build:drawsy": "tsc -p tsconfig.drawsy.json",
+    "dev:drawsy": "tsc -p tsconfig.drawsy.json && node --watch dist/drawsy/bridge-main.js",
+    "start:drawsy": "node dist/drawsy/bridge-main.js",
+    "start:drawsy-mcp": "node dist/drawsy/mcp.js",
+    "test:drawsy": "tsc -p tsconfig.test.json && node --test dist-test/drawsy/*.test.js",
+    "prepublishOnly": "tsc -p tsconfig.drawsy.json"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.25.2",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

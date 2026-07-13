@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-test/
+.DS_Store
+*.mcpb
+.vercel
+bun.lock
+.vscode
+opencode.json
+
+.env
