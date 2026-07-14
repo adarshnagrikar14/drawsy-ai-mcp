@@ -233,7 +233,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
-    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
     { name: "computer-use", tools: {}, authStatus: "unsupported" }
   ] } });
   if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
@@ -349,7 +349,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ["documents@openai-primary-runtime"]
     );
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 8, authStatus: "unsupported" },
+      { name: "drawsy", toolCount: 16, authStatus: "unsupported" },
     ]);
 
     const settingsResponse = await fetch(
