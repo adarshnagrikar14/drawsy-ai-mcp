@@ -14,10 +14,98 @@ import test from "node:test";
 
 import { createDrawsyBridge } from "./bridge.js";
 import {
+  parseAgentConnectorTurn,
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasOperations,
 } from "./protocol.js";
+
+test("connector turns require exact, unexpired, matching grants", () => {
+  const expiresAt = Date.now() + 60_000;
+  assert.deepEqual(
+    parseAgentConnectorTurn({
+      turnId: "turn-one",
+      sources: [
+        {
+          connectionId: "google-one",
+          capability: "mail",
+          label: "gmail",
+          accountLabel: "person@example.com",
+        },
+      ],
+      grants: [
+        {
+          connectionId: "google-one",
+          grant: "opaque.signed-grant",
+          expiresAt,
+        },
+      ],
+    }),
+    {
+      turnId: "turn-one",
+      sources: [
+        {
+          connectionId: "google-one",
+          capability: "mail",
+          label: "gmail",
+          accountLabel: "person@example.com",
+        },
+      ],
+      grants: [
+        {
+          connectionId: "google-one",
+          grant: "opaque.signed-grant",
+          expiresAt,
+        },
+      ],
+    }
+  );
+  assert.equal(parseAgentConnectorTurn(undefined), null);
+  assert.throws(
+    () =>
+      parseAgentConnectorTurn({
+        turnId: "turn-one",
+        sources: [
+          {
+            connectionId: "google-one",
+            capability: "mail",
+            label: "gmail",
+            accountLabel: "person@example.com",
+          },
+        ],
+        grants: [
+          {
+            connectionId: "not-the-same-account",
+            grant: "opaque.signed-grant",
+            expiresAt,
+          },
+        ],
+      }),
+    /matching grant/
+  );
+  assert.throws(
+    () =>
+      parseAgentConnectorTurn({
+        turnId: "turn-one",
+        sources: [
+          {
+            connectionId: "google-one",
+            capability: "mail",
+            label: "gmail",
+            accountLabel: "person@example.com",
+          },
+        ],
+        grants: [
+          {
+            connectionId: "google-one",
+            grant: "opaque.signed-grant",
+            expiresAt: Date.now() - 1,
+          },
+        ],
+      }),
+    /expired/
+  );
+});
 
 test("canvas operations reject malformed and ambiguous input", () => {
   assert.deepEqual(parseCanvasOperations({}), {
@@ -145,10 +233,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
-    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {} }, authStatus: "unsupported" },
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
     { name: "computer-use", tools: {}, authStatus: "unsupported" }
   ] } });
   if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
+  if (message.method === "thread/unsubscribe") send({ id: message.id, result: { status: "unsubscribed" } });
   if (message.method === "turn/start") {
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
@@ -260,7 +349,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ["documents@openai-primary-runtime"]
     );
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 5, authStatus: "unsupported" },
+      { name: "drawsy", toolCount: 8, authStatus: "unsupported" },
     ]);
 
     const settingsResponse = await fetch(
@@ -319,6 +408,24 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
               bounds: { x: 10, y: 20, width: 300, height: 240 },
             },
           ],
+          connectors: {
+            turnId: "connector-turn-one",
+            sources: [
+              {
+                connectionId: "google-one",
+                capability: "mail",
+                label: "gmail",
+                accountLabel: "person@example.com",
+              },
+            ],
+            grants: [
+              {
+                connectionId: "google-one",
+                grant: "opaque.connector-grant",
+                expiresAt: Date.now() + 60_000,
+              },
+            ],
+          },
         }),
       }
     );
@@ -379,6 +486,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.config.plugins["computer-use@openai-bundled"].enabled,
       false
     );
+    assert.equal(thread.params.config.web_search, "disabled");
     assert.equal(
       thread.params.config.mcp_servers.drawsy.tools.apply_canvas_changes
         .approval_mode,
@@ -398,6 +506,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.config.mcp_servers.drawsy.env.DRAWSY_WORKSPACE_ROOT,
       canonicalFolder
     );
+    const threads = log.filter((message) => message.method === "thread/start");
+    assert.equal(threads.length, 2);
+    assert.equal(threads[1].params.config.web_search, "live");
+    assert.equal(threads[1].params.model, "gpt-next");
+    assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [canonicalFolder]);
     const turn = log.find((message) => message.method === "turn/start");
     assert.equal(turn.params.permissions, undefined);
     assert.deepEqual(turn.params.sandboxPolicy, {
@@ -427,7 +540,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         `\\.drawsy/context/${session.id}/${contextId}/source-source-1-`
       )
     );
-    assert.deepEqual(turn.params.input.slice(5), [
+    assert.match(turn.params.input[5].text, /@gmail/);
+    assert.match(turn.params.input[5].text, /person@example\.com/);
+    assert.match(turn.params.input[5].text, /not require a tool call/);
+    assert.doesNotMatch(JSON.stringify(turn.params.input), /connector-grant/);
+    assert.deepEqual(turn.params.input.slice(6), [
       {
         type: "text",
         text: "Inspect the folder.",

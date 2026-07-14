@@ -130,6 +130,33 @@ export type AgentPromptTag = {
   path: string;
 };
 
+export type ConnectorCapability =
+  | "mail"
+  | "calendar"
+  | "drive"
+  | "notion"
+  | "slack"
+  | "github";
+
+export type AgentConnectorSource = {
+  connectionId: string;
+  capability: ConnectorCapability;
+  label: string;
+  accountLabel: string;
+};
+
+export type AgentConnectorGrant = {
+  connectionId: string;
+  grant: string;
+  expiresAt: number;
+};
+
+export type AgentConnectorTurn = {
+  turnId: string;
+  sources: AgentConnectorSource[];
+  grants: AgentConnectorGrant[];
+};
+
 export type BridgeEvent =
   | {
       type: "session.ready";
@@ -163,6 +190,133 @@ export type BridgeEvent =
 
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
+  "mail",
+  "calendar",
+  "drive",
+  "notion",
+  "slack",
+  "github",
+]);
+
+export const isConnectorCapability = (
+  value: unknown
+): value is ConnectorCapability =>
+  typeof value === "string" &&
+  CONNECTOR_CAPABILITIES.has(value as ConnectorCapability);
+
+const boundedConnectorString = (
+  value: unknown,
+  label: string,
+  maxLength: number
+) => {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > maxLength ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return value.trim();
+};
+
+export const parseAgentConnectorTurn = (
+  value: unknown
+): AgentConnectorTurn | null => {
+  if (value === undefined) return null;
+  if (!isRecord(value)) {
+    throw new Error("connectors must be an object.");
+  }
+  const allowedKeys = new Set(["turnId", "sources", "grants"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error("connectors contains an unknown field.");
+  }
+  const turnId = boundedConnectorString(value.turnId, "turnId", 256);
+  if (
+    !Array.isArray(value.sources) ||
+    value.sources.length < 1 ||
+    value.sources.length > 12
+  ) {
+    throw new Error("connectors.sources must contain 1 to 12 sources.");
+  }
+  const sources = value.sources.map((source): AgentConnectorSource => {
+    if (
+      !isRecord(source) ||
+      Object.keys(source).some(
+        (key) =>
+          !["connectionId", "capability", "label", "accountLabel"].includes(
+            key
+          )
+      ) ||
+      !isConnectorCapability(source.capability)
+    ) {
+      throw new Error("A connected source is invalid.");
+    }
+    return {
+      connectionId: boundedConnectorString(
+        source.connectionId,
+        "source connectionId",
+        256
+      ),
+      capability: source.capability,
+      label: boundedConnectorString(source.label, "source label", 64),
+      accountLabel: boundedConnectorString(
+        source.accountLabel,
+        "source accountLabel",
+        256
+      ),
+    };
+  });
+  if (
+    new Set(
+      sources.map((source) => `${source.connectionId}:${source.capability}`)
+    ).size !== sources.length
+  ) {
+    throw new Error("Connected sources must be unique.");
+  }
+  if (
+    !Array.isArray(value.grants) ||
+    value.grants.length < 1 ||
+    value.grants.length > 6
+  ) {
+    throw new Error("connectors.grants must contain 1 to 6 grants.");
+  }
+  const grants = value.grants.map((grant): AgentConnectorGrant => {
+    if (
+      !isRecord(grant) ||
+      Object.keys(grant).some(
+        (key) => !["connectionId", "grant", "expiresAt"].includes(key)
+      ) ||
+      typeof grant.expiresAt !== "number" ||
+      !Number.isInteger(grant.expiresAt) ||
+      grant.expiresAt <= Date.now() ||
+      grant.expiresAt > Date.now() + 15 * 60 * 1000
+    ) {
+      throw new Error("A connector grant is invalid or expired.");
+    }
+    return {
+      connectionId: boundedConnectorString(
+        grant.connectionId,
+        "grant connectionId",
+        256
+      ),
+      grant: boundedConnectorString(grant.grant, "connector grant", 8_192),
+      expiresAt: grant.expiresAt,
+    };
+  });
+  if (new Set(grants.map((grant) => grant.connectionId)).size !== grants.length) {
+    throw new Error("Connector grants must be unique per connection.");
+  }
+  const grantedConnections = new Set(
+    grants.map((grant) => grant.connectionId)
+  );
+  if (sources.some((source) => !grantedConnections.has(source.connectionId))) {
+    throw new Error("Every connected source requires a matching grant.");
+  }
+  return { turnId, sources, grants };
+};
 
 export const parseCanvasImageRequest = (value: unknown): CanvasImageRequest => {
   if (!isRecord(value)) {
