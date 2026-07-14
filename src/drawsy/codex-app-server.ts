@@ -5,7 +5,12 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import type {
+  AgentAccessMode,
+  AgentControls,
   AgentMetadata,
+  AgentModelOption,
+  AgentPromptTag,
+  AgentSettingsPatch,
   BridgeEvent,
   JsonObject,
 } from "./protocol.js";
@@ -17,22 +22,165 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
+type ActiveTool = {
+  tool: string;
+  startedMessage: string;
+  completedMessage: string;
+};
+
+const describeToolItem = (item: JsonObject): ActiveTool | null => {
+  if (item.type === "mcpToolCall" && typeof item.tool === "string") {
+    const server = typeof item.server === "string" ? item.server : "MCP";
+    return {
+      tool: server === "drawsy" ? item.tool : `${server}/${item.tool}`,
+      startedMessage:
+        server === "drawsy" ? "Working on the canvas" : `Using ${item.tool}`,
+      completedMessage:
+        server === "drawsy" ? "Canvas tool finished" : `${item.tool} finished`,
+    };
+  }
+  if (item.type === "commandExecution") {
+    const command =
+      typeof item.command === "string"
+        ? item.command.replace(/\s+/g, " ").trim().slice(0, 96)
+        : "command";
+    return {
+      tool: "commandExecution",
+      startedMessage: `Running ${command}`,
+      completedMessage: "Command finished",
+    };
+  }
+  if (item.type === "fileChange") {
+    const count = Array.isArray(item.changes) ? item.changes.length : 0;
+    return {
+      tool: "fileChange",
+      startedMessage: count
+        ? `Editing ${count} file${count === 1 ? "" : "s"}`
+        : "Editing files",
+      completedMessage: "File changes finished",
+    };
+  }
+  if (item.type === "dynamicToolCall" && typeof item.tool === "string") {
+    return {
+      tool: item.tool,
+      startedMessage: `Using ${item.tool}`,
+      completedMessage: `${item.tool} finished`,
+    };
+  }
+  if (item.type === "plan") {
+    return {
+      tool: "plan",
+      startedMessage: "Building a plan",
+      completedMessage: "Plan ready",
+    };
+  }
+  if (item.type === "reasoning") {
+    return {
+      tool: "reasoning",
+      startedMessage: "Reasoning through the request",
+      completedMessage: "Reasoning complete",
+    };
+  }
+  if (item.type === "collabAgentToolCall") {
+    const tool = typeof item.tool === "string" ? item.tool : "agent task";
+    return {
+      tool: "collaboration",
+      startedMessage: `Coordinating ${tool}`,
+      completedMessage: `${tool} finished`,
+    };
+  }
+  if (item.type === "subAgentActivity") {
+    return {
+      tool: "subAgent",
+      startedMessage: "Agent activity started",
+      completedMessage: "Agent activity finished",
+    };
+  }
+  if (item.type === "webSearch") {
+    const query =
+      typeof item.query === "string" ? item.query.trim().slice(0, 72) : "";
+    return {
+      tool: "webSearch",
+      startedMessage: query ? `Searching for “${query}”` : "Searching the web",
+      completedMessage: "Web search finished",
+    };
+  }
+  if (item.type === "imageView") {
+    const fileName =
+      typeof item.path === "string" ? path.basename(item.path) : "image";
+    return {
+      tool: "imageView",
+      startedMessage: `Inspecting ${fileName}`,
+      completedMessage: "Image inspected",
+    };
+  }
+  if (item.type === "imageGeneration") {
+    return {
+      tool: "imageGeneration",
+      startedMessage: "Generating an image",
+      completedMessage: "Image generated",
+    };
+  }
+  if (item.type === "sleep") {
+    return {
+      tool: "wait",
+      startedMessage: "Waiting",
+      completedMessage: "Wait finished",
+    };
+  }
+  if (item.type === "enteredReviewMode") {
+    return {
+      tool: "review",
+      startedMessage: "Starting review",
+      completedMessage: "Review started",
+    };
+  }
+  if (item.type === "exitedReviewMode") {
+    return {
+      tool: "review",
+      startedMessage: "Finishing review",
+      completedMessage: "Review finished",
+    };
+  }
+  if (item.type === "contextCompaction") {
+    return {
+      tool: "context",
+      startedMessage: "Organizing conversation context",
+      completedMessage: "Conversation context organized",
+    };
+  }
+  return null;
+};
+
 const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
 - You may use normal local coding tools only inside the selected folder.
-- Internet, browser/computer control, apps, connectors, and every non-Drawsy MCP are unavailable.
+- Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
+- Apps and connectors are unavailable. Network access is controlled by the current Drawsy session setting.
 - The Drawsy MCP is permanently attached and scoped to the single current canvas.
 - Read the canvas before changing it. Use apply_canvas_changes for targeted upserts/deletions.
 - Never attempt to discover or access another canvas.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
+const BLOCKED_PLUGIN_IDS = new Set([
+  "browser@openai-bundled",
+  "chrome@openai-bundled",
+  "computer-use@openai-bundled",
+]);
+
+const blockedCapability = (value: string) =>
+  /(^|[-_\s])(browser|chrome|computer)([-_\s]|$)/i.test(value);
+
 export class CodexAppServer {
   private readonly process: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<number, PendingRequest>();
-  private readonly activeTools = new Map<string, string>();
+  private readonly activeTools = new Map<string, ActiveTool>();
   private nextId = 1;
   private threadId: string | null = null;
   private turnActive = false;
   private agentMetadata: AgentMetadata | null = null;
+  private accessMode: AgentAccessMode = "workspace";
+  private internetEnabled = false;
+  private lastControls: AgentControls | null = null;
   private resolveDrawsyMcp!: () => void;
   private rejectDrawsyMcp!: (error: Error) => void;
   private readonly drawsyMcpReady = new Promise<void>((resolve, reject) => {
@@ -51,8 +199,6 @@ export class CodexAppServer {
         "app-server",
         "--stdio",
         "--strict-config",
-        "--disable",
-        "plugins",
         "--disable",
         "apps",
         "--disable",
@@ -161,6 +307,11 @@ export class CodexAppServer {
       developerInstructions: DEVELOPER_INSTRUCTIONS,
       personality: "pragmatic",
       config: {
+        plugins: {
+          "browser@openai-bundled": { enabled: false },
+          "chrome@openai-bundled": { enabled: false },
+          "computer-use@openai-bundled": { enabled: false },
+        },
         mcp_servers: {
           ...disabledMcpServers,
           drawsy: {
@@ -241,7 +392,13 @@ export class CodexAppServer {
     }
   }
 
-  async startTurn(message: string) {
+  async startTurn(
+    message: string,
+    tags: { skills: AgentPromptTag[]; plugins: AgentPromptTag[] } = {
+      skills: [],
+      plugins: [],
+    }
+  ) {
     if (!this.threadId || this.turnActive) {
       throw new Error(
         this.turnActive
@@ -249,16 +406,39 @@ export class CodexAppServer {
           : "Codex is not ready."
       );
     }
+    const controls = this.lastControls || (await this.getControls());
+    for (const skill of tags.skills) {
+      if (
+        !controls.skills.some(
+          (option) => option.name === skill.name && option.path === skill.path
+        )
+      ) {
+        throw new Error(`Skill is not available: ${skill.name}`);
+      }
+    }
+    for (const plugin of tags.plugins) {
+      if (
+        !controls.plugins.some(
+          (option) => option.name === plugin.name && option.path === plugin.path
+        )
+      ) {
+        throw new Error(`Plugin is not available: ${plugin.name}`);
+      }
+    }
     this.turnActive = true;
     try {
       await this.request("turn/start", {
         threadId: this.threadId,
         cwd: this.folderPath,
-        permissions: ":workspace",
+        sandboxPolicy: this.sandboxPolicy(),
         runtimeWorkspaceRoots: [this.folderPath],
         approvalPolicy: "never",
         environments: [],
-        input: [{ type: "text", text: message }],
+        input: [
+          ...tags.skills.map((skill) => ({ type: "skill", ...skill })),
+          ...tags.plugins.map((plugin) => ({ type: "mention", ...plugin })),
+          { type: "text", text: message, text_elements: [] },
+        ],
         personality: "pragmatic",
         summary: "concise",
       });
@@ -266,6 +446,271 @@ export class CodexAppServer {
       this.turnActive = false;
       throw error;
     }
+  }
+
+  async getControls(): Promise<AgentControls> {
+    if (!this.threadId) {
+      throw new Error("Codex is not ready.");
+    }
+    const [modelsResult, skillsResult, pluginsResult, mcpResult] =
+      (await Promise.all([
+        this.request("model/list", { limit: 100, includeHidden: false }),
+        this.request("skills/list", { cwds: [this.folderPath] }),
+        this.request("plugin/list", {
+          cwds: [this.folderPath],
+          marketplaceKinds: ["local"],
+        }),
+        this.request("mcpServerStatus/list", {
+          limit: 100,
+          detail: "toolsAndAuthOnly",
+          threadId: this.threadId,
+        }),
+      ])) as [JsonObject, JsonObject, JsonObject, JsonObject];
+
+    const models = Array.isArray(modelsResult.data)
+      ? modelsResult.data.flatMap((value): AgentModelOption[] => {
+          if (
+            !isRecord(value) ||
+            value.hidden === true ||
+            typeof value.model !== "string"
+          ) {
+            return [];
+          }
+          const efforts = Array.isArray(value.supportedReasoningEfforts)
+            ? value.supportedReasoningEfforts.flatMap((effort) =>
+                isRecord(effort) &&
+                typeof effort.reasoningEffort === "string" &&
+                typeof effort.description === "string"
+                  ? [
+                      {
+                        id: effort.reasoningEffort,
+                        description: effort.description,
+                      },
+                    ]
+                  : []
+              )
+            : [];
+          return [
+            {
+              id: typeof value.id === "string" ? value.id : value.model,
+              model: value.model,
+              displayName:
+                typeof value.displayName === "string"
+                  ? value.displayName
+                  : value.model,
+              description:
+                typeof value.description === "string" ? value.description : "",
+              efforts,
+              defaultEffort:
+                typeof value.defaultReasoningEffort === "string"
+                  ? value.defaultReasoningEffort
+                  : efforts[0]?.id || "medium",
+              isDefault: value.isDefault === true,
+            },
+          ];
+        })
+      : [];
+    if (
+      this.agentMetadata &&
+      !models.some((model) => model.model === this.agentMetadata?.model)
+    ) {
+      const currentEffort = this.agentMetadata.reasoningEffort;
+      models.unshift({
+        id: this.agentMetadata.model,
+        model: this.agentMetadata.model,
+        displayName: this.agentMetadata.model,
+        description: "Current Codex configuration",
+        efforts: currentEffort
+          ? [{ id: currentEffort, description: "Current reasoning level" }]
+          : [],
+        defaultEffort: currentEffort || "medium",
+        isDefault: false,
+      });
+    }
+
+    const skills = Array.isArray(skillsResult.data)
+      ? skillsResult.data.flatMap((entry) => {
+          if (!isRecord(entry) || !Array.isArray(entry.skills)) return [];
+          return entry.skills.flatMap((skill) => {
+            if (
+              !isRecord(skill) ||
+              skill.enabled !== true ||
+              typeof skill.name !== "string" ||
+              typeof skill.description !== "string"
+            ) {
+              return [];
+            }
+            const pathValue = typeof skill.path === "string" ? skill.path : "";
+            if (
+              !pathValue ||
+              blockedCapability(skill.name) ||
+              /\/(browser|chrome|computer-use)\//i.test(pathValue)
+            ) {
+              return [];
+            }
+            const skillInterface = isRecord(skill.interface)
+              ? skill.interface
+              : {};
+            return [
+              {
+                name: skill.name,
+                displayName:
+                  typeof skillInterface.displayName === "string"
+                    ? skillInterface.displayName
+                    : skill.name,
+                description: skill.description,
+                path: pathValue,
+              },
+            ];
+          });
+        })
+      : [];
+
+    const plugins = Array.isArray(pluginsResult.marketplaces)
+      ? pluginsResult.marketplaces.flatMap((marketplace) => {
+          if (!isRecord(marketplace) || !Array.isArray(marketplace.plugins)) {
+            return [];
+          }
+          return marketplace.plugins.flatMap((plugin) => {
+            if (
+              !isRecord(plugin) ||
+              typeof plugin.id !== "string" ||
+              typeof plugin.name !== "string" ||
+              plugin.installed !== true ||
+              plugin.enabled !== true ||
+              plugin.availability !== "AVAILABLE" ||
+              BLOCKED_PLUGIN_IDS.has(plugin.id)
+            ) {
+              return [];
+            }
+            const pluginInterface = isRecord(plugin.interface)
+              ? plugin.interface
+              : {};
+            const pluginSource = isRecord(plugin.source) ? plugin.source : {};
+            const pluginPath =
+              pluginSource.type === "local" &&
+              typeof pluginSource.path === "string"
+                ? pluginSource.path
+                : "";
+            if (!pluginPath) return [];
+            const capabilities = Array.isArray(pluginInterface.capabilities)
+              ? pluginInterface.capabilities.filter(
+                  (capability): capability is string =>
+                    typeof capability === "string"
+                )
+              : [];
+            if (capabilities.some(blockedCapability)) return [];
+            return [
+              {
+                id: plugin.id,
+                name:
+                  typeof pluginInterface.displayName === "string"
+                    ? pluginInterface.displayName
+                    : plugin.name,
+                description:
+                  typeof pluginInterface.shortDescription === "string"
+                    ? pluginInterface.shortDescription
+                    : "Installed plugin",
+                capabilities,
+                path: pluginPath,
+              },
+            ];
+          });
+        })
+      : [];
+
+    const mcpServers = Array.isArray(mcpResult.data)
+      ? mcpResult.data.flatMap((server) => {
+          if (
+            !isRecord(server) ||
+            typeof server.name !== "string" ||
+            blockedCapability(server.name)
+          ) {
+            return [];
+          }
+          const tools = isRecord(server.tools) ? Object.keys(server.tools) : [];
+          return [
+            {
+              name: server.name,
+              toolCount: tools.length,
+              authStatus:
+                typeof server.authStatus === "string"
+                  ? server.authStatus
+                  : "unsupported",
+            },
+          ];
+        })
+      : [];
+
+    const controls = {
+      accessMode: this.accessMode,
+      internetEnabled: this.internetEnabled,
+      models,
+      skills,
+      plugins,
+      mcpServers,
+    };
+    this.lastControls = controls;
+    return controls;
+  }
+
+  async updateSettings(settings: AgentSettingsPatch) {
+    if (!this.threadId || !this.agentMetadata) {
+      throw new Error("Codex is not ready.");
+    }
+    if (this.turnActive) {
+      throw new Error("Wait for the current Codex turn to finish.");
+    }
+    const controls = await this.getControls();
+    const nextAccessMode = settings.accessMode ?? this.accessMode;
+    const nextInternet = settings.internetEnabled ?? this.internetEnabled;
+    const selectedModel = settings.model
+      ? controls.models.find((model) => model.model === settings.model)
+      : undefined;
+    if (settings.model && !selectedModel) {
+      throw new Error("That model is not available in this Codex session.");
+    }
+    const modelForEffort =
+      selectedModel ||
+      controls.models.find(
+        (model) => model.model === this.agentMetadata?.model
+      );
+    if (
+      settings.effort &&
+      (!modelForEffort ||
+        !modelForEffort.efforts.some((effort) => effort.id === settings.effort))
+    ) {
+      throw new Error("That reasoning level is not available for this model.");
+    }
+
+    await this.request("thread/settings/update", {
+      threadId: this.threadId,
+      cwd: this.folderPath,
+      approvalPolicy: "never",
+      sandboxPolicy: this.sandboxPolicy(nextAccessMode, nextInternet),
+      ...(selectedModel ? { model: selectedModel.model } : {}),
+      ...(settings.effort ? { effort: settings.effort } : {}),
+    });
+    this.accessMode = nextAccessMode;
+    this.internetEnabled = nextInternet;
+    if (selectedModel) this.agentMetadata.model = selectedModel.model;
+    if (settings.effort) this.agentMetadata.reasoningEffort = settings.effort;
+    return { agent: this.metadata, controls: await this.getControls() };
+  }
+
+  private sandboxPolicy(
+    accessMode = this.accessMode,
+    internetEnabled = this.internetEnabled
+  ): JsonObject {
+    return accessMode === "readOnly"
+      ? { type: "readOnly", networkAccess: internetEnabled }
+      : {
+          type: "workspaceWrite",
+          writableRoots: [this.folderPath],
+          networkAccess: internetEnabled,
+          excludeTmpdirEnvVar: true,
+          excludeSlashTmp: true,
+        };
   }
 
   close() {
@@ -312,32 +757,21 @@ export class CodexAppServer {
         (status === "failed" || status === "error")
       ) {
         this.rejectDrawsyMcp(new Error("Drawsy MCP failed to start."));
-      } else if (
-        name &&
-        name !== "drawsy" &&
-        (status === "starting" || status === "ready")
-      ) {
-        this.rejectDrawsyMcp(
-          new Error(`Unexpected MCP server was enabled: ${name}.`)
-        );
       }
     } else if (message.method === "turn/started") {
       this.emit({ type: "turn.status", data: { status: "inProgress" } });
     } else if (message.method === "item/started" && isRecord(params.item)) {
       const item = params.item;
-      if (
-        item.type === "mcpToolCall" &&
-        item.server === "drawsy" &&
-        typeof item.id === "string" &&
-        typeof item.tool === "string"
-      ) {
-        this.activeTools.set(item.id, item.tool);
+      const activity = describeToolItem(item);
+      if (activity && typeof item.id === "string") {
+        this.activeTools.set(item.id, activity);
         this.emit({
           type: "tool.status",
           data: {
             itemId: item.id,
-            tool: item.tool,
+            tool: activity.tool,
             status: "inProgress",
+            message: activity.startedMessage,
           },
         });
       }
@@ -350,12 +784,95 @@ export class CodexAppServer {
           type: "tool.status",
           data: {
             itemId: params.itemId,
-            tool: this.activeTools.get(params.itemId) || "drawsy",
+            tool: this.activeTools.get(params.itemId)?.tool || "drawsy",
             status: "inProgress",
             message: params.message,
           },
         });
       }
+    } else if (
+      message.method === "item/plan/delta" ||
+      message.method === "item/reasoning/summaryTextDelta" ||
+      message.method === "item/reasoning/summaryPartAdded" ||
+      message.method === "item/reasoning/textDelta"
+    ) {
+      if (typeof params.itemId === "string") {
+        const activity = this.activeTools.get(params.itemId);
+        const reasoning = message.method.includes("reasoning");
+        this.emit({
+          type: "tool.status",
+          data: {
+            itemId: params.itemId,
+            tool: activity?.tool || (reasoning ? "reasoning" : "plan"),
+            status: "inProgress",
+            message:
+              activity?.startedMessage ||
+              (reasoning ? "Reasoning through the request" : "Building a plan"),
+          },
+        });
+      }
+    } else if (message.method === "item/commandExecution/outputDelta") {
+      if (typeof params.itemId === "string") {
+        const activity = this.activeTools.get(params.itemId);
+        if (activity) {
+          this.emit({
+            type: "tool.status",
+            data: {
+              itemId: params.itemId,
+              tool: activity.tool,
+              status: "inProgress",
+              message: `${activity.startedMessage} · receiving output`,
+            },
+          });
+        }
+      }
+    } else if (message.method === "item/fileChange/patchUpdated") {
+      if (typeof params.itemId === "string") {
+        const activity = this.activeTools.get(params.itemId);
+        if (activity) {
+          const count = Array.isArray(params.changes)
+            ? params.changes.length
+            : 0;
+          this.emit({
+            type: "tool.status",
+            data: {
+              itemId: params.itemId,
+              tool: activity.tool,
+              status: "inProgress",
+              message: count
+                ? `Preparing ${count} file change${count === 1 ? "" : "s"}`
+                : activity.startedMessage,
+            },
+          });
+        }
+      }
+    } else if (message.method === "turn/plan/updated") {
+      const plan = Array.isArray(params.plan)
+        ? params.plan.filter(isRecord)
+        : [];
+      const completed = plan.filter(
+        (step) => step.status === "completed"
+      ).length;
+      const allCompleted = plan.length > 0 && completed === plan.length;
+      const explanation =
+        typeof params.explanation === "string"
+          ? params.explanation.replace(/\s+/g, " ").trim().slice(0, 120)
+          : "";
+      const turnId =
+        typeof params.turnId === "string" ? params.turnId : randomUUID();
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId: `${turnId}:plan`,
+          tool: "plan",
+          status: allCompleted ? "completed" : "inProgress",
+          message:
+            explanation ||
+            (plan.length
+              ? `${completed} of ${plan.length} plan steps complete`
+              : "Building a plan"),
+        },
+      });
     } else if (message.method === "item/agentMessage/delta") {
       this.emit({
         type: "assistant.delta",
@@ -372,21 +889,22 @@ export class CodexAppServer {
           type: "assistant.final",
           data: {
             text: item.text,
-            itemId:
-              typeof item.id === "string" ? item.id : randomUUID(),
+            itemId: typeof item.id === "string" ? item.id : randomUUID(),
           },
         });
-      } else if (
-        item.type === "mcpToolCall" &&
-        item.server === "drawsy" &&
-        typeof item.id === "string" &&
-        typeof item.tool === "string"
-      ) {
+      } else if (typeof item.id === "string") {
+        const activity =
+          this.activeTools.get(item.id) || describeToolItem(item);
+        if (!activity) {
+          return;
+        }
         this.activeTools.delete(item.id);
         const status =
-          item.status === "completed" || item.status === "failed"
-            ? item.status
-            : "failed";
+          item.status === "failed" ||
+          item.success === false ||
+          (typeof item.exitCode === "number" && item.exitCode !== 0)
+            ? "failed"
+            : "completed";
         const error =
           isRecord(item.error) && typeof item.error.message === "string"
             ? item.error.message
@@ -395,8 +913,10 @@ export class CodexAppServer {
           type: "tool.status",
           data: {
             itemId: item.id,
-            tool: item.tool,
+            tool: activity.tool,
             status,
+            message:
+              status === "completed" ? activity.completedMessage : undefined,
             ...(error ? { error } : {}),
           },
         });
@@ -427,6 +947,54 @@ export class CodexAppServer {
         type: "error",
         data: { code: "codex_error", message: error },
       });
+    } else if (
+      message.method === "warning" ||
+      message.method === "guardianWarning" ||
+      message.method === "configWarning" ||
+      message.method === "deprecationNotice"
+    ) {
+      const warning =
+        typeof params.message === "string"
+          ? params.message
+          : typeof params.summary === "string"
+          ? params.summary
+          : "Codex reported a warning.";
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId: randomUUID(),
+          tool: "warning",
+          status: "warning",
+          message: warning,
+        },
+      });
+    } else if (message.method === "model/rerouted") {
+      const from =
+        typeof params.fromModel === "string" ? params.fromModel : "model";
+      const to =
+        typeof params.toModel === "string" ? params.toModel : "another model";
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId: randomUUID(),
+          tool: "model",
+          status: "warning",
+          message: `Model changed from ${from} to ${to}`,
+        },
+      });
+    } else if (
+      message.method === "model/safetyBuffering/updated" &&
+      params.showBufferingUi === true
+    ) {
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId: randomUUID(),
+          tool: "model",
+          status: "warning",
+          message: "The model is applying additional safety checks",
+        },
+      });
     }
   }
 
@@ -435,6 +1003,9 @@ export class CodexAppServer {
       method === "item/commandExecution/requestApproval" ||
       method === "item/fileChange/requestApproval"
     ) {
+      this.emitPolicyWarning(
+        "A requested action was blocked by the current permission policy"
+      );
       this.respond(id, { decision: "decline" });
       return;
     }
@@ -451,10 +1022,12 @@ export class CodexAppServer {
       return;
     }
     if (method === "item/tool/requestUserInput") {
+      this.emitPolicyWarning("Codex requested additional interactive input");
       this.respond(id, { answers: {} });
       return;
     }
     if (method === "mcpServer/elicitation/request") {
+      this.emitPolicyWarning("An MCP server requested additional input");
       this.respond(id, { action: "decline", content: null, _meta: null });
       return;
     }
@@ -467,6 +1040,18 @@ export class CodexAppServer {
       return;
     }
     this.respondError(id, -32601, `Unsupported server request: ${method}`);
+  }
+
+  private emitPolicyWarning(message: string) {
+    this.emit({
+      type: "tool.status",
+      data: {
+        itemId: randomUUID(),
+        tool: "permissions",
+        status: "warning",
+        message,
+      },
+    });
   }
 
   private request(method: string, params: JsonObject) {

@@ -12,6 +12,8 @@ import {
   MAX_BODY_BYTES,
   isRecord,
   parseCanvasOperations,
+  type AgentSettingsPatch,
+  type AgentPromptTag,
   type BridgeEvent,
   type CanvasOperations,
 } from "./protocol.js";
@@ -79,6 +81,32 @@ const readJson = async (request: IncomingMessage) => {
     throw new Error("Request body must be a JSON object.");
   }
   return value;
+};
+
+const parsePromptTags = (value: unknown, label: string): AgentPromptTag[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new Error(`${label} must be an array of at most 20 tags.`);
+  }
+  const tags = value.map((tag) => {
+    if (
+      !isRecord(tag) ||
+      typeof tag.name !== "string" ||
+      !tag.name.trim() ||
+      typeof tag.path !== "string" ||
+      !tag.path.trim()
+    ) {
+      throw new Error(`${label} contains an invalid tag.`);
+    }
+    return { name: tag.name.trim(), path: tag.path };
+  });
+  return tags.filter(
+    (tag, index) =>
+      tags.findIndex(
+        (candidate) =>
+          candidate.name === tag.name && candidate.path === tag.path
+      ) === index
+  );
 };
 
 export const createDrawsyBridge = (
@@ -373,8 +401,76 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        await session.codex.startTurn(message);
+        await session.codex.startTurn(message, {
+          skills: parsePromptTags(body.skills, "skills"),
+          plugins: parsePromptTags(body.plugins, "plugins"),
+        });
         json(response, 202, { accepted: true });
+        return;
+      }
+
+      const controlsMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/controls$/
+      );
+      if (request.method === "GET" && controlsMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(controlsMatch[1]!)
+        );
+        if (!session) return;
+        json(response, 200, await session.codex.getControls());
+        return;
+      }
+
+      const settingsMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/settings$/
+      );
+      if (request.method === "POST" && settingsMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(settingsMatch[1]!)
+        );
+        if (!session) return;
+        const body = await readJson(request);
+        const allowedKeys = new Set([
+          "model",
+          "effort",
+          "accessMode",
+          "internetEnabled",
+        ]);
+        if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+          json(response, 400, {
+            error: {
+              code: "invalid_settings",
+              message: "Unknown Codex setting.",
+            },
+          });
+          return;
+        }
+        if (
+          (body.model !== undefined && typeof body.model !== "string") ||
+          (body.effort !== undefined && typeof body.effort !== "string") ||
+          (body.accessMode !== undefined &&
+            body.accessMode !== "workspace" &&
+            body.accessMode !== "readOnly") ||
+          (body.internetEnabled !== undefined &&
+            typeof body.internetEnabled !== "boolean")
+        ) {
+          json(response, 400, {
+            error: {
+              code: "invalid_settings",
+              message: "Invalid Codex setting value.",
+            },
+          });
+          return;
+        }
+        json(
+          response,
+          200,
+          await session.codex.updateSettings(body as AgentSettingsPatch)
+        );
         return;
       }
 
