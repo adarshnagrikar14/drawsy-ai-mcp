@@ -38,7 +38,7 @@ const freePort = () =>
     });
   });
 
-test("bridge starts a folder-scoped Codex session with only Drawsy MCP", async () => {
+test("bridge keeps Codex controls inside the selected-folder boundary", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
@@ -61,11 +61,36 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-test", modelProvider: "openai", reasoningEffort: "medium", serviceTier: null, activePermissionProfile: { id: ":workspace" }, runtimeWorkspaceRoots: message.params.runtimeWorkspaceRoots, approvalPolicy: "never", sandbox: { networkAccess: false } } });
     send({ method: "mcpServer/startupStatus/updated", params: { threadId: "thread-1", name: "drawsy", status: "ready" } });
   }
+  if (message.method === "model/list") send({ id: message.id, result: { data: [
+    { id: "gpt-test", model: "gpt-test", displayName: "GPT Test", description: "Current model", hidden: false, supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }], defaultReasoningEffort: "medium", isDefault: true },
+    { id: "gpt-next", model: "gpt-next", displayName: "GPT Next", description: "Next model", hidden: false, supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Deeper" }], defaultReasoningEffort: "high", isDefault: false }
+  ] } });
+  if (message.method === "skills/list") send({ id: message.id, result: { data: [{ cwd: message.params.cwds[0], skills: [
+    { name: "documents", description: "Create documents", path: "/plugins/documents/skills/documents/SKILL.md", enabled: true, interface: { displayName: "Documents" } },
+    { name: "control-chrome", description: "Control Chrome", path: "/plugins/chrome/skills/control-chrome/SKILL.md", enabled: true }
+  ], errors: [] }] } });
+  if (message.method === "plugin/list") send({ id: message.id, result: { marketplaces: [{ name: "local", path: "/plugins", interface: null, plugins: [
+    { id: "documents@openai-primary-runtime", name: "documents", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/documents" }, interface: { displayName: "Documents", shortDescription: "Document tools", capabilities: ["skills"] } },
+    { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } }
+  ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
+  if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {} }, authStatus: "unsupported" },
+    { name: "computer-use", tools: {}, authStatus: "unsupported" }
+  ] } });
+  if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
   if (message.method === "turn/start") {
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
+    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
+    send({ method: "item/reasoning/summaryTextDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: 0, delta: "Inspecting" } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: ["Inspecting"], content: [] } } });
+    send({ method: "turn/plan/updated", params: { threadId: "thread-1", turnId: "turn-1", explanation: null, plan: [{ step: "Inspect files", status: "inProgress" }] } });
+    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "inProgress" } } });
+    send({ method: "item/commandExecution/outputDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "command-1", delta: "README.md\\n" } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "completed", exitCode: 0 } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "inProgress" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
+    send({ method: "warning", params: { threadId: "thread-1", message: "Test warning" } });
     send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId: "thread-1", turnId: "turn-1" } });
     send({ id: "server-time", method: "currentTime/read", params: {} });
   }
@@ -131,26 +156,94 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       serviceTier: null,
     });
 
+    const controlsResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/controls`,
+      { headers: { origin, authorization: `Bearer ${session.token}` } }
+    );
+    assert.equal(controlsResponse.status, 200);
+    const controls = (await controlsResponse.json()) as {
+      models: Array<{ model: string }>;
+      skills: Array<{ name: string }>;
+      plugins: Array<{ id: string }>;
+      mcpServers: Array<{ name: string; toolCount: number }>;
+    };
+    assert.deepEqual(
+      controls.models.map((model) => model.model),
+      ["gpt-test", "gpt-next"]
+    );
+    assert.deepEqual(controls.skills, [
+      {
+        name: "documents",
+        displayName: "Documents",
+        description: "Create documents",
+        path: "/plugins/documents/skills/documents/SKILL.md",
+      },
+    ]);
+    assert.deepEqual(
+      controls.plugins.map((plugin) => plugin.id),
+      ["documents@openai-primary-runtime"]
+    );
+    assert.deepEqual(controls.mcpServers, [
+      { name: "drawsy", toolCount: 2, authStatus: "unsupported" },
+    ]);
+
+    const settingsResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/settings`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          model: "gpt-next",
+          effort: "high",
+          internetEnabled: true,
+        }),
+      }
+    );
+    assert.equal(settingsResponse.status, 200);
+
     const turnResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/turns`,
       {
         method: "POST",
         headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ message: "Inspect the folder." }),
+        body: JSON.stringify({
+          message: "Inspect the folder.",
+          skills: [
+            {
+              name: "documents",
+              path: "/plugins/documents/skills/documents/SKILL.md",
+            },
+          ],
+          plugins: [{ name: "Documents", path: "/plugins/documents" }],
+        }),
       }
     );
     assert.equal(turnResponse.status, 202);
 
     let turnEvents = "";
-    while (!turnEvents.includes('"status":"completed"')) {
+    while (
+      !turnEvents.includes('"type":"turn.status","data":{"status":"completed"')
+    ) {
       const event = await reader.read();
       assert.equal(event.done, false);
       turnEvents += new TextDecoder().decode(event.value);
     }
     assert.match(turnEvents, /"type":"tool.status"/);
     assert.match(turnEvents, /"tool":"read_current_canvas"/);
+    assert.match(turnEvents, /"tool":"commandExecution"/);
+    assert.match(turnEvents, /"tool":"reasoning"/);
+    assert.match(turnEvents, /"tool":"plan"/);
+    assert.match(turnEvents, /"status":"warning"/);
     assert.match(turnEvents, /"status":"inProgress"/);
     assert.match(turnEvents, /"status":"completed"/);
+    assert.ok(
+      turnEvents.indexOf('"tool":"reasoning"') <
+        turnEvents.indexOf('"tool":"commandExecution"')
+    );
+    assert.ok(
+      turnEvents.indexOf('"tool":"commandExecution"') <
+        turnEvents.indexOf('"tool":"read_current_canvas"')
+    );
 
     const log = (await readFile(requestLog, "utf8"))
       .trim()
@@ -163,14 +256,47 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(thread.params.config.mcp_servers.inherited.enabled, false);
     assert.equal(thread.params.config.mcp_servers.drawsy.enabled, true);
     assert.equal(
+      thread.params.config.plugins["browser@openai-bundled"].enabled,
+      false
+    );
+    assert.equal(
+      thread.params.config.plugins["chrome@openai-bundled"].enabled,
+      false
+    );
+    assert.equal(
+      thread.params.config.plugins["computer-use@openai-bundled"].enabled,
+      false
+    );
+    assert.equal(
       thread.params.config.mcp_servers.drawsy.tools.apply_canvas_changes
         .approval_mode,
       "approve"
     );
     const turn = log.find((message) => message.method === "turn/start");
-    assert.equal(turn.params.permissions, ":workspace");
-    assert.equal(turn.params.sandboxPolicy, undefined);
+    assert.equal(turn.params.permissions, undefined);
+    assert.deepEqual(turn.params.sandboxPolicy, {
+      type: "workspaceWrite",
+      writableRoots: [canonicalFolder],
+      networkAccess: true,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: true,
+    });
     assert.deepEqual(turn.params.environments, []);
+    assert.deepEqual(turn.params.input, [
+      {
+        type: "skill",
+        name: "documents",
+        path: "/plugins/documents/skills/documents/SKILL.md",
+      },
+      { type: "mention", name: "Documents", path: "/plugins/documents" },
+      { type: "text", text: "Inspect the folder.", text_elements: [] },
+    ]);
+    const settings = log.find(
+      (message) => message.method === "thread/settings/update"
+    );
+    assert.equal(settings.params.model, "gpt-next");
+    assert.equal(settings.params.effort, "high");
+    assert.deepEqual(settings.params.sandboxPolicy, turn.params.sandboxPolicy);
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
 

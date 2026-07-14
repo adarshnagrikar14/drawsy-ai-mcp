@@ -23,6 +23,60 @@ export type AgentMetadata = {
   serviceTier: string | null;
 };
 
+export type AgentAccessMode = "workspace" | "readOnly";
+
+export type AgentModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  efforts: Array<{ id: string; description: string }>;
+  defaultEffort: string;
+  isDefault: boolean;
+};
+
+export type AgentSkillOption = {
+  name: string;
+  displayName: string;
+  description: string;
+  path: string;
+};
+
+export type AgentPluginOption = {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  path: string;
+};
+
+export type AgentMcpOption = {
+  name: string;
+  toolCount: number;
+  authStatus: string;
+};
+
+export type AgentControls = {
+  accessMode: AgentAccessMode;
+  internetEnabled: boolean;
+  models: AgentModelOption[];
+  skills: AgentSkillOption[];
+  plugins: AgentPluginOption[];
+  mcpServers: AgentMcpOption[];
+};
+
+export type AgentSettingsPatch = {
+  model?: string;
+  effort?: string;
+  accessMode?: AgentAccessMode;
+  internetEnabled?: boolean;
+};
+
+export type AgentPromptTag = {
+  name: string;
+  path: string;
+};
+
 export type BridgeEvent =
   | {
       type: "session.ready";
@@ -36,7 +90,7 @@ export type BridgeEvent =
       data: {
         itemId: string;
         tool: string;
-        status: "inProgress" | "completed" | "failed";
+        status: "inProgress" | "completed" | "failed" | "warning";
         message?: string;
         error?: string;
       };
