@@ -42,14 +42,23 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     }
     if (
       request.url?.endsWith("/connectors/search") ||
-      request.url?.endsWith("/connectors/read")
+      request.url?.endsWith("/connectors/read") ||
+      request.url?.endsWith("/connectors/query")
     ) {
       let body = "";
       for await (const chunk of request) body += chunk.toString();
       connectorRequests.push({ url: request.url, body: JSON.parse(body) });
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
-        request.url.endsWith("/search")
+        request.url.endsWith("/query")
+          ? JSON.stringify({
+              operation: "list",
+              capability: "mail",
+              kind: "mail_messages",
+              items: [{ id: "opaque-latest", title: "Latest message" }],
+              nextCursor: null,
+            })
+          : request.url.endsWith("/search")
           ? JSON.stringify({
               operation: "search",
               capability: "mail",
@@ -141,7 +150,15 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "add_image_from_file",
       "apply_canvas_changes",
       "capture_canvas_context",
+      "list_calendar_events",
+      "list_calendars",
       "list_connected_sources",
+      "list_drive_files",
+      "list_github_repositories",
+      "list_mail_messages",
+      "list_notion_content",
+      "list_slack_channels",
+      "list_slack_messages",
       "read_connected_item",
       "read_current_canvas",
       "replace_canvas_image_from_file",
@@ -242,6 +259,14 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       arguments: {},
     });
     assert.match(JSON.stringify(sources.content), /person@example\.com/);
+    const latestMail = await client.callTool({
+      name: "list_mail_messages",
+      arguments: {
+        connectionId: "google-one",
+        limit: 1,
+      },
+    });
+    assert.match(JSON.stringify(latestMail.content), /opaque-latest/);
     const search = await client.callTool({
       name: "search_connected_source",
       arguments: {
@@ -261,6 +286,16 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     });
     assert.match(JSON.stringify(connectedItem.content), /Status is green/);
     assert.deepEqual(connectorRequests, [
+      {
+        url: "/internal/sessions/session-1/connectors/query",
+        body: {
+          capability: "mail",
+          kind: "mail_messages",
+          connectionId: "google-one",
+          includeSpamTrash: false,
+          limit: 1,
+        },
+      },
       {
         url: "/internal/sessions/session-1/connectors/search",
         body: {

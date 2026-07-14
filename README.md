@@ -9,7 +9,8 @@ Local, canvas-scoped MCP and Codex app-server bridge for Drawsy.
 - Uses `approvalPolicy: "never"`: work inside the boundary proceeds without prompts; escape attempts are denied.
 - Disables command network access, web search, apps, plugins, browser/computer tools, and inherited MCP servers.
 - Injects the Drawsy MCP into every Codex thread. The model never receives a canvas ID and cannot select another canvas.
-- Exposes connected sources only when the user tags them on that turn. Access is read-only, account-specific, short-lived, and routed through the Drawsy backend; provider credentials never enter Codex or the local MCP process.
+- Exposes only sources the user has attached in chat. The frontend remints exact, short-lived, read-only grants for every follow-up turn; provider credentials never enter Codex or the local MCP process.
+- Gives attached sources provider-native read tools for mail filters, calendar ranges, recent Drive and Notion content, Slack channels/history, GitHub repositories, keyword search, and deep item reads.
 - Exposes targeted canvas reads, upserts, deletes, real raster-image insertion/replacement, and selection or region context capture. Existing elements are not deleted by omission.
 - Local images stay restricted to the selected folder. Image-generator outputs cross through a short-lived, session-only capability recorded from Codex itself; all images are MIME-sniffed, size-limited, content-hashed, and transferred with their Excalidraw file record instead of rendering as placeholders.
 - Canvas context combines a rendered PNG (including visible annotations) with pristine selected raster sources. Context files live under the selected folder's ignored `.drawsy/context` directory and are removed when the session closes.

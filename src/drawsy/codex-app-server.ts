@@ -53,6 +53,25 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
             started: "Searching connected source",
             completed: "Source searched",
           }
+        : item.tool === "list_mail_messages"
+        ? { started: "Checking mail", completed: "Mail ready" }
+        : item.tool === "list_calendars"
+        ? { started: "Checking calendars", completed: "Calendars ready" }
+        : item.tool === "list_calendar_events"
+        ? { started: "Checking calendar", completed: "Events ready" }
+        : item.tool === "list_drive_files"
+        ? { started: "Checking Drive", completed: "Drive files ready" }
+        : item.tool === "list_github_repositories"
+        ? {
+            started: "Checking repositories",
+            completed: "Repositories ready",
+          }
+        : item.tool === "list_notion_content"
+        ? { started: "Checking Notion", completed: "Notion content ready" }
+        : item.tool === "list_slack_channels"
+        ? { started: "Checking Slack channels", completed: "Channels ready" }
+        : item.tool === "list_slack_messages"
+        ? { started: "Checking Slack", completed: "Slack messages ready" }
         : item.tool === "read_connected_item"
         ? { started: "Reading connected item", completed: "Source read" }
         : {
@@ -197,7 +216,7 @@ const toolFailure = (item: JsonObject) => {
         .filter(Boolean)
         .join(" ")
     : "";
-  return content ? content.slice(0, 500) : "Canvas tool failed.";
+  return content ? content.slice(0, 500) : "Tool failed without details.";
 };
 
 const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.

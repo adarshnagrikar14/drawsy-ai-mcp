@@ -435,13 +435,40 @@ export const createDrawsyBridge = (
 
   const executeConnectorRequest = async (
     session: Session,
-    action: "search" | "read",
+    action: "search" | "read" | "query",
     body: Record<string, unknown>
   ) => {
     const allowedKeys =
       action === "search"
         ? new Set(["capability", "connectionId", "query", "cursor", "limit"])
-        : new Set(["capability", "connectionId", "resourceId"]);
+        : action === "read"
+        ? new Set(["capability", "connectionId", "resourceId"])
+        : new Set([
+            "capability",
+            "connectionId",
+            "kind",
+            "query",
+            "after",
+            "before",
+            "from",
+            "to",
+            "subject",
+            "label",
+            "includeSpamTrash",
+            "calendarId",
+            "channelId",
+            "startTime",
+            "endTime",
+            "timeZone",
+            "mimeType",
+            "orderBy",
+            "object",
+            "sortDirection",
+            "owner",
+            "visibility",
+            "cursor",
+            "limit",
+          ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
       throw new BridgeRequestError(
         400,
@@ -456,7 +483,8 @@ export const createDrawsyBridge = (
     );
     let operation:
       | { operation: "search"; query: string; cursor?: string; limit?: number }
-      | { operation: "read"; resourceId: string };
+      | { operation: "read"; resourceId: string }
+      | ({ operation: "list" } & Record<string, unknown>);
     if (action === "search") {
       const query = typeof body.query === "string" ? body.query.trim() : "";
       if (
@@ -482,7 +510,7 @@ export const createDrawsyBridge = (
         ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}),
         ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
       };
-    } else {
+    } else if (action === "read") {
       const resourceId =
         typeof body.resourceId === "string" ? body.resourceId.trim() : "";
       if (!resourceId || resourceId.length > 4_096) {
@@ -493,6 +521,10 @@ export const createDrawsyBridge = (
         );
       }
       operation = { operation: "read", resourceId };
+    } else {
+      const { capability: _capability, connectionId: _connectionId, ...input } =
+        body;
+      operation = { operation: "list", ...input };
     }
     const response = await fetch(
       new URL("/v1/connectors/ai/execute", connectorBackendUrl),
@@ -817,7 +849,7 @@ export const createDrawsyBridge = (
       }
 
       const internalConnector = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/connectors\/(list|search|read)$/
+        /^\/internal\/sessions\/([^/]+)\/connectors\/(list|search|read|query)$/
       );
       if (request.method === "POST" && internalConnector) {
         const session = internalSession(
@@ -826,7 +858,11 @@ export const createDrawsyBridge = (
           decodeURIComponent(internalConnector[1]!)
         );
         if (!session) return;
-        const action = internalConnector[2] as "list" | "search" | "read";
+        const action = internalConnector[2] as
+          | "list"
+          | "search"
+          | "read"
+          | "query";
         const body = await readJson(request);
         if (action === "list") {
           if (Object.keys(body).length) {
