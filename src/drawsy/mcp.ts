@@ -604,9 +604,10 @@ server.registerTool(
   "list_github_repositories",
   {
     description:
-      "List GitHub repositories ordered by most recently updated. Omit owner to use the attached account and include every repository the granted credential can access; pass owner for that owner's public repositories. Use read_connected_item on a result to read its README.",
+      "Find or list GitHub repositories. Pass query to search repository names and descriptions; omit it to list repositories ordered by most recently updated. Omit owner to use every repository the attached credential can access, or pass owner to constrain results. Use read_connected_item on a result to read its README.",
     inputSchema: z.object({
       connectionId: connectorConnectionIdSchema,
+      query: z.string().trim().min(1).max(256).optional(),
       owner: z
         .string()
         .trim()

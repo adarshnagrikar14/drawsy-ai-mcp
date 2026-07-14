@@ -250,6 +250,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "completed", exitCode: 0 } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "inProgress" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
+    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "failed", error: null, result: { content: [{ type: "text", text: "GitHub App cannot access that repository." }], structuredContent: null, _meta: null } } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "inProgress", result: "" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
       generatedImage
@@ -441,6 +443,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     }
     assert.match(turnEvents, /"type":"tool.status"/);
     assert.match(turnEvents, /"tool":"read_current_canvas"/);
+    assert.match(turnEvents, /"tool":"list_github_repositories"/);
+    assert.match(turnEvents, /GitHub App cannot access that repository\./);
     assert.match(turnEvents, /"tool":"commandExecution"/);
     assert.match(turnEvents, /"tool":"reasoning"/);
     assert.match(turnEvents, /"tool":"plan"/);

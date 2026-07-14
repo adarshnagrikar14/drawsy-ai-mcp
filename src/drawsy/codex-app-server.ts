@@ -208,7 +208,11 @@ const toolFailure = (item: JsonObject) => {
   if (isRecord(item.error) && typeof item.error.message === "string") {
     return item.error.message.trim().slice(0, 500);
   }
-  if (!isRecord(item.result) || item.result.isError !== true) return undefined;
+  const failed =
+    item.status === "failed" ||
+    item.success === false ||
+    (isRecord(item.result) && item.result.isError === true);
+  if (!failed || !isRecord(item.result)) return undefined;
   const content = Array.isArray(item.result.content)
     ? item.result.content
         .filter(isRecord)
