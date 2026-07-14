@@ -36,6 +36,9 @@ import {
   parseCanvasContextRequest,
   parseCanvasImageRequest,
   parseCanvasOperations,
+  parseAgentConnectorTurn,
+  isConnectorCapability,
+  type AgentConnectorTurn,
   type AgentSettingsPatch,
   type AgentPromptTag,
   type BridgeEvent,
@@ -89,9 +92,20 @@ type Session = {
     createdAt: number;
   }>;
   contextCaptures: Map<string, StoredContextCapture>;
+  activeConnectorTurn: AgentConnectorTurn | null;
   codex: CodexAppServer;
   touchedAt: number;
 };
+
+class BridgeRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
 
 const json = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, {
@@ -156,6 +170,28 @@ const readBytes = async (
   return Buffer.concat(chunks);
 };
 
+const readFetchText = async (response: Response, maxBytes: number) => {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new BridgeRequestError(
+        502,
+        "connector_response_too_large",
+        "The connected source returned too much data. Narrow the request."
+      );
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+};
+
 const parsePromptTags = (value: unknown, label: string): AgentPromptTag[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 20) {
@@ -214,10 +250,32 @@ export const createDrawsyBridge = (
         .filter(Boolean)
   );
   const bridgeUrl = `http://${host}:${port}`;
+  const connectorBackendUrl = new URL(
+    process.env.DRAWSY_CONNECTOR_BACKEND_URL || "http://127.0.0.1:3004"
+  );
+  const connectorBackendIsLoopback = ["127.0.0.1", "::1", "localhost"].includes(
+    connectorBackendUrl.hostname
+  );
+  if (
+    (connectorBackendUrl.protocol !== "https:" &&
+      !(connectorBackendUrl.protocol === "http:" && connectorBackendIsLoopback)) ||
+    connectorBackendUrl.username ||
+    connectorBackendUrl.password
+  ) {
+    throw new Error(
+      "DRAWSY_CONNECTOR_BACKEND_URL must be HTTPS or a loopback HTTP URL."
+    );
+  }
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
 
   const emit = (session: Session, event: BridgeEvent) => {
+    if (
+      event.type === "error" ||
+      (event.type === "turn.status" && event.data.status !== "inProgress")
+    ) {
+      session.activeConnectorTurn = null;
+    }
     const line = `${JSON.stringify(event)}\n`;
     for (const client of session.clients) {
       client.write(line);
@@ -311,6 +369,174 @@ export const createDrawsyBridge = (
     }
     session.touchedAt = Date.now();
     return session;
+  };
+
+  const connectorSource = (
+    session: Session,
+    capability: unknown,
+    connectionId: unknown
+  ) => {
+    if (!session.activeConnectorTurn) {
+      throw new BridgeRequestError(
+        403,
+        "connector_not_attached",
+        "No connected source was attached to this turn."
+      );
+    }
+    if (!isConnectorCapability(capability)) {
+      throw new BridgeRequestError(
+        400,
+        "connector_capability_invalid",
+        "The connected-source capability is invalid."
+      );
+    }
+    if (
+      connectionId !== undefined &&
+      (typeof connectionId !== "string" || !connectionId.trim())
+    ) {
+      throw new BridgeRequestError(
+        400,
+        "connector_connection_invalid",
+        "The connected-source connection is invalid."
+      );
+    }
+    const matches = session.activeConnectorTurn.sources.filter(
+      (source) =>
+        source.capability === capability &&
+        (connectionId === undefined || source.connectionId === connectionId)
+    );
+    if (!matches.length) {
+      throw new BridgeRequestError(
+        403,
+        "connector_not_attached",
+        "That connected source was not attached to this turn."
+      );
+    }
+    if (matches.length > 1) {
+      throw new BridgeRequestError(
+        409,
+        "connector_account_required",
+        "More than one matching account is attached. List sources and pass connectionId."
+      );
+    }
+    const source = matches[0]!;
+    const grant = session.activeConnectorTurn.grants.find(
+      (candidate) => candidate.connectionId === source.connectionId
+    );
+    if (!grant || grant.expiresAt <= Date.now()) {
+      throw new BridgeRequestError(
+        401,
+        "connector_grant_expired",
+        "Connected-source access expired. Send the message again."
+      );
+    }
+    return { source, grant };
+  };
+
+  const executeConnectorRequest = async (
+    session: Session,
+    action: "search" | "read",
+    body: Record<string, unknown>
+  ) => {
+    const allowedKeys =
+      action === "search"
+        ? new Set(["capability", "connectionId", "query", "cursor", "limit"])
+        : new Set(["capability", "connectionId", "resourceId"]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      throw new BridgeRequestError(
+        400,
+        "connector_request_invalid",
+        "The connected-source request contains an unknown field."
+      );
+    }
+    const { source, grant } = connectorSource(
+      session,
+      body.capability,
+      body.connectionId
+    );
+    let operation:
+      | { operation: "search"; query: string; cursor?: string; limit?: number }
+      | { operation: "read"; resourceId: string };
+    if (action === "search") {
+      const query = typeof body.query === "string" ? body.query.trim() : "";
+      if (
+        !query ||
+        query.length > 2_000 ||
+        (body.cursor !== undefined &&
+          (typeof body.cursor !== "string" || body.cursor.length > 4_096)) ||
+        (body.limit !== undefined &&
+          (typeof body.limit !== "number" ||
+            !Number.isInteger(body.limit) ||
+            body.limit < 1 ||
+            body.limit > 20))
+      ) {
+        throw new BridgeRequestError(
+          400,
+          "connector_request_invalid",
+          "The connected-source search is invalid."
+        );
+      }
+      operation = {
+        operation: "search",
+        query,
+        ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}),
+        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+      };
+    } else {
+      const resourceId =
+        typeof body.resourceId === "string" ? body.resourceId.trim() : "";
+      if (!resourceId || resourceId.length > 4_096) {
+        throw new BridgeRequestError(
+          400,
+          "connector_request_invalid",
+          "The connected item reference is invalid."
+        );
+      }
+      operation = { operation: "read", resourceId };
+    }
+    const response = await fetch(
+      new URL("/v1/connectors/ai/execute", connectorBackendUrl),
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${grant.grant}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionId: session.id,
+          turnId: session.activeConnectorTurn!.turnId,
+          connectionId: source.connectionId,
+          capability: source.capability,
+          ...operation,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      }
+    );
+    const text = await readFetchText(response, 512 * 1024);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new BridgeRequestError(
+        502,
+        "connector_response_invalid",
+        "The connected source returned an invalid response."
+      );
+    }
+    if (!response.ok) {
+      const message =
+        isRecord(payload) &&
+        isRecord(payload.error) &&
+        typeof payload.error.message === "string"
+          ? payload.error.message
+          : `Connected-source request failed (${response.status}).`;
+      throw new BridgeRequestError(
+        response.status >= 400 && response.status < 500 ? response.status : 502,
+        "connector_request_failed",
+        message
+      );
+    }
+    return payload;
   };
 
   const storeContextAsset = async (
@@ -590,6 +816,39 @@ export const createDrawsyBridge = (
         return;
       }
 
+      const internalConnector = url.pathname.match(
+        /^\/internal\/sessions\/([^/]+)\/connectors\/(list|search|read)$/
+      );
+      if (request.method === "POST" && internalConnector) {
+        const session = internalSession(
+          request,
+          response,
+          decodeURIComponent(internalConnector[1]!)
+        );
+        if (!session) return;
+        const action = internalConnector[2] as "list" | "search" | "read";
+        const body = await readJson(request);
+        if (action === "list") {
+          if (Object.keys(body).length) {
+            throw new BridgeRequestError(
+              400,
+              "connector_request_invalid",
+              "The source list request must be empty."
+            );
+          }
+          json(response, 200, {
+            sources: session.activeConnectorTurn?.sources || [],
+          });
+          return;
+        }
+        json(
+          response,
+          200,
+          await executeConnectorRequest(session, action, body)
+        );
+        return;
+      }
+
       if (!requirePublicOrigin(request, response)) return;
 
       const contextAssetMatch = url.pathname.match(
@@ -712,6 +971,7 @@ export const createDrawsyBridge = (
           canvasPending: new Map(),
           generatedImages: [],
           contextCaptures: new Map(),
+          activeConnectorTurn: null,
           codex,
           touchedAt: Date.now(),
         };
@@ -774,14 +1034,25 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        await session.codex.startTurn(
-          message,
-          {
-            skills: parsePromptTags(body.skills, "skills"),
-            plugins: parsePromptTags(body.plugins, "plugins"),
-          },
-          resolveContextCaptures(session, parseContextReferences(body.contexts))
-        );
+        const connectorTurn = parseAgentConnectorTurn(body.connectors);
+        session.activeConnectorTurn = connectorTurn;
+        try {
+          await session.codex.startTurn(
+            message,
+            {
+              skills: parsePromptTags(body.skills, "skills"),
+              plugins: parsePromptTags(body.plugins, "plugins"),
+            },
+            resolveContextCaptures(
+              session,
+              parseContextReferences(body.contexts)
+            ),
+            connectorTurn?.sources || []
+          );
+        } catch (error) {
+          session.activeConnectorTurn = null;
+          throw error;
+        }
         json(response, 202, { accepted: true });
         return;
       }
@@ -911,12 +1182,23 @@ export const createDrawsyBridge = (
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unexpected bridge error.";
-      const status = message.includes("cancelled")
-        ? 409
-        : message.includes("MiB")
-        ? 413
-        : 500;
-      json(response, status, { error: { code: "bridge_error", message } });
+      const status =
+        error instanceof BridgeRequestError
+          ? error.status
+          : message.includes("cancelled")
+          ? 409
+          : message.includes("MiB")
+          ? 413
+          : 500;
+      json(response, status, {
+        error: {
+          code:
+            error instanceof BridgeRequestError
+              ? error.code
+              : "bridge_error",
+          message,
+        },
+      });
     }
   });
 

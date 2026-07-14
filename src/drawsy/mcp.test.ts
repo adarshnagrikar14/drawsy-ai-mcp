@@ -21,8 +21,49 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
   await writeFile(path.join(workspaceRoot, "generated.png"), png);
   await writeFile(path.join(testRoot, "outside.png"), png);
   let appliedBody = "";
+  const connectorRequests: Array<{ url: string; body: unknown }> = [];
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, `Bearer ${secret}`);
+    if (request.url?.endsWith("/connectors/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          sources: [
+            {
+              connectionId: "google-one",
+              capability: "mail",
+              label: "gmail",
+              accountLabel: "person@example.com",
+            },
+          ],
+        })
+      );
+      return;
+    }
+    if (
+      request.url?.endsWith("/connectors/search") ||
+      request.url?.endsWith("/connectors/read")
+    ) {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      connectorRequests.push({ url: request.url, body: JSON.parse(body) });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        request.url.endsWith("/search")
+          ? JSON.stringify({
+              operation: "search",
+              capability: "mail",
+              items: [{ id: "opaque-message", title: "Project update" }],
+              nextCursor: null,
+            })
+          : JSON.stringify({
+              operation: "read",
+              capability: "mail",
+              item: { id: "opaque-message", content: "Status is green." },
+            })
+      );
+      return;
+    }
     if (request.url?.endsWith("/read")) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ canvasId: "canvas-1", elements: [] }));
@@ -100,8 +141,11 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "add_image_from_file",
       "apply_canvas_changes",
       "capture_canvas_context",
+      "list_connected_sources",
+      "read_connected_item",
       "read_current_canvas",
       "replace_canvas_image_from_file",
+      "search_connected_source",
     ]);
     assert.equal(
       tools.tools.some(
@@ -192,6 +236,49 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       targetElementId: "image-1",
       sourcePath: "generated.png",
     });
+
+    const sources = await client.callTool({
+      name: "list_connected_sources",
+      arguments: {},
+    });
+    assert.match(JSON.stringify(sources.content), /person@example\.com/);
+    const search = await client.callTool({
+      name: "search_connected_source",
+      arguments: {
+        capability: "mail",
+        connectionId: "google-one",
+        query: "project update",
+      },
+    });
+    assert.match(JSON.stringify(search.content), /opaque-message/);
+    const connectedItem = await client.callTool({
+      name: "read_connected_item",
+      arguments: {
+        capability: "mail",
+        connectionId: "google-one",
+        resourceId: "opaque-message",
+      },
+    });
+    assert.match(JSON.stringify(connectedItem.content), /Status is green/);
+    assert.deepEqual(connectorRequests, [
+      {
+        url: "/internal/sessions/session-1/connectors/search",
+        body: {
+          capability: "mail",
+          connectionId: "google-one",
+          query: "project update",
+          limit: 10,
+        },
+      },
+      {
+        url: "/internal/sessions/session-1/connectors/read",
+        body: {
+          capability: "mail",
+          connectionId: "google-one",
+          resourceId: "opaque-message",
+        },
+      },
+    ]);
   } finally {
     await client.close();
     await new Promise<void>((resolve, reject) =>
