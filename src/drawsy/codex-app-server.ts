@@ -13,6 +13,7 @@ import type {
   AgentPromptTag,
   AgentSettingsPatch,
   BridgeEvent,
+  DrawsySurfaceKind,
   JsonObject,
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
@@ -200,6 +201,14 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
 - Never attempt to discover or access another canvas.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
+const getDeveloperInstructions = (surfaceKind: DrawsySurfaceKind) =>
+  `${DEVELOPER_INSTRUCTIONS}${
+    surfaceKind === "presentation"
+      ? `
+- This surface is a presentation. Preserve its slide structure: put slide-bound additions in the relevant existing frame, or create a frame for a new slide when appropriate. Treat this as contextual guidance, not an absolute rule—keep content unframed or remove its frame when the user's request or intended composition calls for it, and do not wrap every element separately.`
+      : ""
+  }`;
+
 const BLOCKED_PLUGIN_IDS = new Set([
   "browser@openai-bundled",
   "chrome@openai-bundled",
@@ -229,7 +238,12 @@ export class CodexAppServer {
 
   private constructor(
     private readonly folderPath: string,
-    private readonly session: { id: string; secret: string; bridgeUrl: string },
+    private readonly session: {
+      id: string;
+      secret: string;
+      bridgeUrl: string;
+      surfaceKind: DrawsySurfaceKind;
+    },
     private readonly emit: (event: BridgeEvent) => void,
     private readonly registerGeneratedImage: (image: {
       id: string;
@@ -300,7 +314,12 @@ export class CodexAppServer {
 
   static async start(
     folderPath: string,
-    session: { id: string; secret: string; bridgeUrl: string },
+    session: {
+      id: string;
+      secret: string;
+      bridgeUrl: string;
+      surfaceKind: DrawsySurfaceKind;
+    },
     emit: (event: BridgeEvent) => void,
     registerGeneratedImage: (image: {
       id: string;
@@ -356,7 +375,7 @@ export class CodexAppServer {
       approvalPolicy: "never",
       ephemeral: true,
       environments: [],
-      developerInstructions: DEVELOPER_INSTRUCTIONS,
+      developerInstructions: getDeveloperInstructions(this.session.surfaceKind),
       personality: "pragmatic",
       config: {
         plugins: {

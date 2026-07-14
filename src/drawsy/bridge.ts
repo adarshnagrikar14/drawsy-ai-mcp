@@ -43,6 +43,7 @@ import {
   type CanvasContextRequest,
   type CanvasImageReplacement,
   type CanvasOperations,
+  type DrawsySurfaceKind,
 } from "./protocol.js";
 
 type FolderSelection = {
@@ -77,6 +78,7 @@ type Session = {
   internalSecret: string;
   canvasId: string;
   canvasName: string;
+  surfaceKind: DrawsySurfaceKind;
   folder: FolderSelection;
   clients: Set<ServerResponse>;
   canvasPending: Map<string, CanvasPending>;
@@ -635,6 +637,7 @@ export const createDrawsyBridge = (
         const canvasId = typeof body.canvasId === "string" ? body.canvasId : "";
         const canvasName =
           typeof body.canvasName === "string" ? body.canvasName : "Untitled";
+        const surfaceKind = body.surfaceKind ?? "canvas";
         const folder = selections.get(selectionId);
         if (!folder || folder.expiresAt <= Date.now()) {
           json(response, 400, {
@@ -654,6 +657,15 @@ export const createDrawsyBridge = (
           });
           return;
         }
+        if (surfaceKind !== "canvas" && surfaceKind !== "presentation") {
+          json(response, 400, {
+            error: {
+              code: "surface_invalid",
+              message: "The Drawsy surface type is invalid.",
+            },
+          });
+          return;
+        }
         const id = randomUUID();
         const token = randomBytes(32).toString("base64url");
         const internalSecret = randomBytes(32).toString("base64url");
@@ -661,7 +673,7 @@ export const createDrawsyBridge = (
         let sessionRef: Session | null = null;
         const codex = await CodexAppServer.start(
           folder.path,
-          { id, secret: internalSecret, bridgeUrl },
+          { id, secret: internalSecret, bridgeUrl, surfaceKind },
           (event) => sessionRef && emit(sessionRef, event),
           (image) => {
             if (!sessionRef) return;
@@ -694,6 +706,7 @@ export const createDrawsyBridge = (
           internalSecret,
           canvasId,
           canvasName,
+          surfaceKind,
           folder,
           clients: new Set(),
           canvasPending: new Map(),
