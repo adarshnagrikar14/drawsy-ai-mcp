@@ -1,4 +1,5 @@
-export const MAX_BODY_BYTES = 5 * 1024 * 1024;
+export const MAX_BODY_BYTES = 12 * 1024 * 1024;
+export const MAX_CANVAS_ASSET_BYTES = 8 * 1024 * 1024;
 export const CANVAS_REQUEST_TIMEOUT_MS = 30_000;
 
 export type JsonObject = Record<string, unknown>;
@@ -14,6 +15,56 @@ export type CanvasSnapshot = {
 export type CanvasOperations = {
   upsertElements: unknown[];
   deleteElementIds: string[];
+  files: CanvasFile[];
+};
+
+export type CanvasFile = {
+  id: string;
+  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  dataURL: string;
+  created: number;
+};
+
+export type CanvasImageRequest = {
+  sourcePath: string;
+  x: number;
+  y: number;
+  maxWidth: number;
+  maxHeight?: number;
+  elementId?: string;
+  frameId?: string | null;
+};
+
+export type CanvasContextBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type CanvasContextRequest = {
+  elementIds?: string[];
+  bounds?: CanvasContextBounds;
+  includeSourceImages: boolean;
+  maxDimension: number;
+};
+
+export type CanvasContextReference = {
+  id: string;
+  elementIds: string[];
+  bounds: CanvasContextBounds;
+};
+
+export type AgentContextCapture = CanvasContextReference & {
+  previewPath: string;
+  sourceImages: Array<{ id: string; path: string }>;
+};
+
+export type CanvasImageReplacement = {
+  targetElementId: string;
+  file: CanvasFile;
+  naturalWidth: number;
+  naturalHeight: number;
 };
 
 export type AgentMetadata = {
@@ -99,9 +150,11 @@ export type BridgeEvent =
       type: "canvas.request";
       data: {
         requestId: string;
-        action: "read" | "apply";
+        action: "read" | "apply" | "capture" | "replaceImage";
         canvasId: string;
         operations?: CanvasOperations;
+        contextRequest?: CanvasContextRequest;
+        imageReplacement?: CanvasImageReplacement;
       };
     }
   | { type: "error"; data: { message: string; code: string } };
@@ -109,12 +162,142 @@ export type BridgeEvent =
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+export const parseCanvasImageRequest = (value: unknown): CanvasImageRequest => {
+  if (!isRecord(value)) {
+    throw new Error("Canvas image request must be an object.");
+  }
+  const finiteWithin = (candidate: unknown, min: number, max: number) =>
+    typeof candidate === "number" &&
+    Number.isFinite(candidate) &&
+    candidate >= min &&
+    candidate <= max;
+  if (typeof value.sourcePath !== "string" || !value.sourcePath.trim()) {
+    throw new Error("sourcePath must be a non-empty string.");
+  }
+  if (
+    !finiteWithin(value.x, -1_000_000, 1_000_000) ||
+    !finiteWithin(value.y, -1_000_000, 1_000_000) ||
+    !finiteWithin(value.maxWidth, Number.EPSILON, 100_000) ||
+    (value.maxHeight !== undefined &&
+      !finiteWithin(value.maxHeight, Number.EPSILON, 100_000)) ||
+    (value.elementId !== undefined &&
+      (typeof value.elementId !== "string" ||
+        !value.elementId.trim() ||
+        value.elementId.length > 128)) ||
+    (value.frameId !== undefined &&
+      value.frameId !== null &&
+      (typeof value.frameId !== "string" ||
+        !value.frameId.trim() ||
+        value.frameId.length > 128))
+  ) {
+    throw new Error("Canvas image placement is invalid.");
+  }
+  return {
+    sourcePath: value.sourcePath.trim(),
+    x: value.x as number,
+    y: value.y as number,
+    maxWidth: value.maxWidth as number,
+    ...(value.maxHeight === undefined
+      ? {}
+      : { maxHeight: value.maxHeight as number }),
+    ...(value.elementId === undefined
+      ? {}
+      : { elementId: (value.elementId as string).trim() }),
+    ...(value.frameId === undefined
+      ? {}
+      : {
+          frameId:
+            value.frameId === null ? null : (value.frameId as string).trim(),
+        }),
+  };
+};
+
+const finiteWithin = (candidate: unknown, min: number, max: number) =>
+  typeof candidate === "number" &&
+  Number.isFinite(candidate) &&
+  candidate >= min &&
+  candidate <= max;
+
+const parseContextBounds = (value: unknown): CanvasContextBounds => {
+  if (
+    !isRecord(value) ||
+    !finiteWithin(value.x, -1_000_000, 1_000_000) ||
+    !finiteWithin(value.y, -1_000_000, 1_000_000) ||
+    !finiteWithin(value.width, Number.EPSILON, 2_000_000) ||
+    !finiteWithin(value.height, Number.EPSILON, 2_000_000)
+  ) {
+    throw new Error("Canvas context bounds are invalid.");
+  }
+  return {
+    x: value.x as number,
+    y: value.y as number,
+    width: value.width as number,
+    height: value.height as number,
+  };
+};
+
+const parseElementIds = (value: unknown) => {
+  if (
+    !Array.isArray(value) ||
+    value.length > 250 ||
+    value.some((id) => typeof id !== "string" || !id.trim() || id.length > 128)
+  ) {
+    throw new Error("Canvas context elementIds are invalid.");
+  }
+  return [...new Set(value.map((id) => (id as string).trim()))];
+};
+
+export const parseCanvasContextRequest = (
+  value: unknown
+): CanvasContextRequest => {
+  if (!isRecord(value)) {
+    throw new Error("Canvas context request must be an object.");
+  }
+  const hasElementIds = value.elementIds !== undefined;
+  const hasBounds = value.bounds !== undefined;
+  if (hasElementIds === hasBounds) {
+    throw new Error("Choose either elementIds or bounds for canvas context.");
+  }
+  const elementIds = hasElementIds ? parseElementIds(value.elementIds) : null;
+  if (elementIds && !elementIds.length) {
+    throw new Error("Canvas context requires at least one element.");
+  }
+  const maxDimension = value.maxDimension ?? 2048;
+  if (!finiteWithin(maxDimension, 256, 4096)) {
+    throw new Error("Canvas context maxDimension must be 256 to 4096.");
+  }
+  return {
+    ...(elementIds ? { elementIds } : {}),
+    ...(hasBounds ? { bounds: parseContextBounds(value.bounds) } : {}),
+    includeSourceImages: value.includeSourceImages !== false,
+    maxDimension: maxDimension as number,
+  };
+};
+
+export const parseCanvasContextReference = (
+  value: unknown
+): CanvasContextReference => {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !/^[a-f0-9-]{36}$/i.test(value.id)
+  ) {
+    throw new Error("Canvas context reference is invalid.");
+  }
+  return {
+    id: value.id,
+    elementIds: parseElementIds(value.elementIds),
+    bounds: parseContextBounds(value.bounds),
+  };
+};
+
 export const parseCanvasOperations = (value: unknown): CanvasOperations => {
   if (!isRecord(value)) {
     throw new Error("Canvas operations must be an object.");
   }
   const upsertElements = value.upsertElements ?? [];
   const deleteElementIds = value.deleteElementIds ?? [];
+  const files = value.files ?? [];
   if (!Array.isArray(upsertElements)) {
     throw new Error("upsertElements must be an array.");
   }
@@ -124,5 +307,36 @@ export const parseCanvasOperations = (value: unknown): CanvasOperations => {
   ) {
     throw new Error("deleteElementIds must contain non-empty strings.");
   }
-  return { upsertElements, deleteElementIds };
+  if (!Array.isArray(files) || files.length > 8) {
+    throw new Error("files must be an array of at most 8 canvas assets.");
+  }
+  const parsedFiles = files.map((file) => {
+    if (
+      !isRecord(file) ||
+      typeof file.id !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(file.id) ||
+      (file.mimeType !== "image/png" &&
+        file.mimeType !== "image/jpeg" &&
+        file.mimeType !== "image/gif" &&
+        file.mimeType !== "image/webp") ||
+      typeof file.dataURL !== "string" ||
+      !file.dataURL.startsWith(`data:${file.mimeType};base64,`) ||
+      file.dataURL.length > Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64 ||
+      typeof file.created !== "number" ||
+      !Number.isFinite(file.created) ||
+      file.created <= 0
+    ) {
+      throw new Error("files contains an invalid canvas image asset.");
+    }
+    return {
+      id: file.id,
+      mimeType: file.mimeType,
+      dataURL: file.dataURL,
+      created: file.created,
+    } as CanvasFile;
+  });
+  if (new Set(parsedFiles.map((file) => file.id)).size !== parsedFiles.length) {
+    throw new Error("files must contain unique ids.");
+  }
+  return { upsertElements, deleteElementIds, files: parsedFiles };
 };

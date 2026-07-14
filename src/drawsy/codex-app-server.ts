@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type {
   AgentAccessMode,
+  AgentContextCapture,
   AgentControls,
   AgentMetadata,
   AgentModelOption,
@@ -31,12 +32,29 @@ type ActiveTool = {
 const describeToolItem = (item: JsonObject): ActiveTool | null => {
   if (item.type === "mcpToolCall" && typeof item.tool === "string") {
     const server = typeof item.server === "string" ? item.server : "MCP";
+    const drawsyMessages =
+      item.tool === "read_current_canvas"
+        ? { started: "Reading current canvas", completed: "Canvas read" }
+        : item.tool === "apply_canvas_changes"
+        ? { started: "Updating canvas", completed: "Canvas updated" }
+        : item.tool === "add_image_from_file"
+        ? { started: "Adding image to canvas", completed: "Image added" }
+        : item.tool === "capture_canvas_context"
+        ? { started: "Capturing canvas context", completed: "Context captured" }
+        : item.tool === "replace_canvas_image_from_file"
+        ? { started: "Replacing canvas image", completed: "Image replaced" }
+        : {
+            started: "Working on the canvas",
+            completed: "Canvas tool finished",
+          };
     return {
       tool: server === "drawsy" ? item.tool : `${server}/${item.tool}`,
       startedMessage:
-        server === "drawsy" ? "Working on the canvas" : `Using ${item.tool}`,
+        server === "drawsy" ? drawsyMessages.started : `Using ${item.tool}`,
       completedMessage:
-        server === "drawsy" ? "Canvas tool finished" : `${item.tool} finished`,
+        server === "drawsy"
+          ? drawsyMessages.completed
+          : `${item.tool} finished`,
     };
   }
   if (item.type === "commandExecution") {
@@ -152,12 +170,33 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
   return null;
 };
 
+const toolFailure = (item: JsonObject) => {
+  if (typeof item.error === "string" && item.error.trim()) {
+    return item.error.trim().slice(0, 500);
+  }
+  if (isRecord(item.error) && typeof item.error.message === "string") {
+    return item.error.message.trim().slice(0, 500);
+  }
+  if (!isRecord(item.result) || item.result.isError !== true) return undefined;
+  const content = Array.isArray(item.result.content)
+    ? item.result.content
+        .filter(isRecord)
+        .map((part) => (typeof part.text === "string" ? part.text.trim() : ""))
+        .filter(Boolean)
+        .join(" ")
+    : "";
+  return content ? content.slice(0, 500) : "Canvas tool failed.";
+};
+
 const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
 - You may use normal local coding tools only inside the selected folder.
 - Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
 - Apps and connectors are unavailable. Network access is controlled by the current Drawsy session setting.
 - The Drawsy MCP is permanently attached and scoped to the single current canvas.
 - Read the canvas before changing it. Use apply_canvas_changes for targeted upserts/deletions.
+- When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered canvas region; its source-image paths are pristine originals.
+- For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
+- For an edit of an existing canvas image, use replace_canvas_image_from_file so its geometry and identity are preserved.
 - Never attempt to discover or access another canvas.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
@@ -191,7 +230,12 @@ export class CodexAppServer {
   private constructor(
     private readonly folderPath: string,
     private readonly session: { id: string; secret: string; bridgeUrl: string },
-    private readonly emit: (event: BridgeEvent) => void
+    private readonly emit: (event: BridgeEvent) => void,
+    private readonly registerGeneratedImage: (image: {
+      id: string;
+      savedPath?: string;
+      result?: string;
+    }) => void
   ) {
     this.process = spawn(
       process.env.DRAWSY_CODEX_BIN || "codex",
@@ -209,8 +253,6 @@ export class CodexAppServer {
         "remote_plugin",
         "--disable",
         "multi_agent",
-        "--disable",
-        "image_generation",
         "--disable",
         "in_app_browser",
         "--disable",
@@ -259,9 +301,19 @@ export class CodexAppServer {
   static async start(
     folderPath: string,
     session: { id: string; secret: string; bridgeUrl: string },
-    emit: (event: BridgeEvent) => void
+    emit: (event: BridgeEvent) => void,
+    registerGeneratedImage: (image: {
+      id: string;
+      savedPath?: string;
+      result?: string;
+    }) => void = () => undefined
   ) {
-    const server = new CodexAppServer(folderPath, session, emit);
+    const server = new CodexAppServer(
+      folderPath,
+      session,
+      emit,
+      registerGeneratedImage
+    );
     try {
       await server.initialize();
       return server;
@@ -321,6 +373,7 @@ export class CodexAppServer {
               DRAWSY_BRIDGE_URL: this.session.bridgeUrl,
               DRAWSY_SESSION_ID: this.session.id,
               DRAWSY_SESSION_SECRET: this.session.secret,
+              DRAWSY_WORKSPACE_ROOT: this.folderPath,
             },
             enabled: true,
             startup_timeout_sec: 15,
@@ -328,6 +381,8 @@ export class CodexAppServer {
             default_tools_approval_mode: "auto",
             tools: {
               apply_canvas_changes: { approval_mode: "approve" },
+              add_image_from_file: { approval_mode: "approve" },
+              replace_canvas_image_from_file: { approval_mode: "approve" },
             },
           },
         },
@@ -397,7 +452,8 @@ export class CodexAppServer {
     tags: { skills: AgentPromptTag[]; plugins: AgentPromptTag[] } = {
       skills: [],
       plugins: [],
-    }
+    },
+    contexts: AgentContextCapture[] = []
   ) {
     if (!this.threadId || this.turnActive) {
       throw new Error(
@@ -437,6 +493,33 @@ export class CodexAppServer {
         input: [
           ...tags.skills.map((skill) => ({ type: "skill", ...skill })),
           ...tags.plugins.map((plugin) => ({ type: "mention", ...plugin })),
+          ...contexts.flatMap((context, index) => [
+            {
+              type: "text",
+              text: `Canvas context ${index + 1} (${context.id}) contains ${
+                context.elementIds.length
+              } selected elements in bounds ${JSON.stringify(
+                context.bounds
+              )}. The next local image is the rendered selection including visible annotations. Pristine source-image paths: ${
+                context.sourceImages.length
+                  ? context.sourceImages
+                      .map((source) => `${source.id}=${source.path}`)
+                      .join(", ")
+                  : "none"
+              }.`,
+              text_elements: [],
+            },
+            {
+              type: "localImage",
+              path: context.previewPath,
+              detail: "original",
+            },
+            ...context.sourceImages.map((source) => ({
+              type: "localImage",
+              path: source.path,
+              detail: "original",
+            })),
+          ]),
           { type: "text", text: message, text_elements: [] },
         ],
         personality: "pragmatic",
@@ -884,6 +967,23 @@ export class CodexAppServer {
       });
     } else if (message.method === "item/completed" && isRecord(params.item)) {
       const item = params.item;
+      if (
+        item.type === "imageGeneration" &&
+        typeof item.id === "string" &&
+        item.status !== "failed"
+      ) {
+        const savedPath =
+          typeof item.savedPath === "string" && item.savedPath.trim()
+            ? item.savedPath
+            : undefined;
+        const result =
+          typeof item.result === "string" && item.result.trim()
+            ? item.result
+            : undefined;
+        if (savedPath || result) {
+          this.registerGeneratedImage({ id: item.id, savedPath, result });
+        }
+      }
       if (item.type === "agentMessage" && typeof item.text === "string") {
         this.emit({
           type: "assistant.final",
@@ -899,16 +999,14 @@ export class CodexAppServer {
           return;
         }
         this.activeTools.delete(item.id);
+        const failure = toolFailure(item);
         const status =
           item.status === "failed" ||
           item.success === false ||
+          failure !== undefined ||
           (typeof item.exitCode === "number" && item.exitCode !== 0)
             ? "failed"
             : "completed";
-        const error =
-          isRecord(item.error) && typeof item.error.message === "string"
-            ? item.error.message
-            : undefined;
         this.emit({
           type: "tool.status",
           data: {
@@ -917,7 +1015,7 @@ export class CodexAppServer {
             status,
             message:
               status === "completed" ? activity.completedMessage : undefined,
-            ...(error ? { error } : {}),
+            ...(failure ? { error: failure } : {}),
           },
         });
       }

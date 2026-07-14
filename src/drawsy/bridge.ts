@@ -1,20 +1,47 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
 
 import { CodexAppServer } from "./codex-app-server.js";
 import { pickFolder } from "./folder-picker.js";
 import {
+  createCanvasImageAsset,
+  createCanvasImageAssetFromBytes,
+  createCanvasImageFileFromBytes,
+  inspectCanvasImage,
+} from "./image-asset.js";
+import {
   CANVAS_REQUEST_TIMEOUT_MS,
+  MAX_CANVAS_ASSET_BYTES,
   MAX_BODY_BYTES,
   isRecord,
+  parseCanvasContextReference,
+  parseCanvasContextRequest,
+  parseCanvasImageRequest,
   parseCanvasOperations,
   type AgentSettingsPatch,
   type AgentPromptTag,
   type BridgeEvent,
+  type CanvasContextReference,
+  type CanvasContextRequest,
+  type CanvasImageReplacement,
   type CanvasOperations,
 } from "./protocol.js";
 
@@ -31,6 +58,19 @@ type CanvasPending = {
   timer: NodeJS.Timeout;
 };
 
+type StoredContextAsset = {
+  id: string;
+  path: string;
+  mimeType: string;
+};
+
+type StoredContextCapture = {
+  id: string;
+  preview?: StoredContextAsset;
+  sources: Map<string, StoredContextAsset>;
+  createdAt: number;
+};
+
 type Session = {
   id: string;
   token: string;
@@ -40,6 +80,13 @@ type Session = {
   folder: FolderSelection;
   clients: Set<ServerResponse>;
   canvasPending: Map<string, CanvasPending>;
+  generatedImages: Array<{
+    id: string;
+    savedPath?: string;
+    result?: string;
+    createdAt: number;
+  }>;
+  contextCaptures: Map<string, StoredContextCapture>;
   codex: CodexAppServer;
   touchedAt: number;
 };
@@ -69,7 +116,9 @@ const readJson = async (request: IncomingMessage) => {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
     if (size > MAX_BODY_BYTES) {
-      throw new Error("Request body exceeds 5 MiB.");
+      throw new Error(
+        `Request body exceeds ${MAX_BODY_BYTES / (1024 * 1024)} MiB.`
+      );
     }
     chunks.push(buffer);
   }
@@ -81,6 +130,28 @@ const readJson = async (request: IncomingMessage) => {
     throw new Error("Request body must be a JSON object.");
   }
   return value;
+};
+
+const readBytes = async (
+  request: IncomingMessage,
+  maxBytes = MAX_CANVAS_ASSET_BYTES
+) => {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) {
+      throw new Error(
+        `Canvas context asset exceeds ${maxBytes / 1024 / 1024} MiB.`
+      );
+    }
+    chunks.push(buffer);
+  }
+  if (!size) {
+    throw new Error("Canvas context asset is empty.");
+  }
+  return Buffer.concat(chunks);
 };
 
 const parsePromptTags = (value: unknown, label: string): AgentPromptTag[] => {
@@ -107,6 +178,18 @@ const parsePromptTags = (value: unknown, label: string): AgentPromptTag[] => {
           candidate.name === tag.name && candidate.path === tag.path
       ) === index
   );
+};
+
+const parseContextReferences = (value: unknown): CanvasContextReference[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 3) {
+    throw new Error("contexts must contain at most 3 canvas captures.");
+  }
+  const contexts = value.map(parseCanvasContextReference);
+  if (new Set(contexts.map((context) => context.id)).size !== contexts.length) {
+    throw new Error("contexts must be unique.");
+  }
+  return contexts;
 };
 
 export const createDrawsyBridge = (
@@ -139,6 +222,31 @@ export const createDrawsyBridge = (
     }
   };
 
+  const sessionContextPath = (session: Session) =>
+    path.join(session.folder.path, ".drawsy", "context", session.id);
+
+  const prepareContextStore = async (folderPath: string) => {
+    const drawsyPath = path.join(folderPath, ".drawsy");
+    const contextPath = path.join(drawsyPath, "context");
+    await mkdir(contextPath, { recursive: true });
+    try {
+      await writeFile(path.join(drawsyPath, ".gitignore"), "*\n", {
+        flag: "wx",
+      });
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "EEXIST") throw error;
+    }
+    const staleBefore = Date.now() - 24 * 60 * 60 * 1000;
+    for (const entry of await readdir(contextPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(contextPath, entry.name);
+      const details = await stat(candidate).catch(() => null);
+      if (details && details.mtimeMs < staleBefore) {
+        await rm(candidate, { recursive: true, force: true });
+      }
+    }
+  };
+
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
     session.codex.close();
@@ -149,6 +257,7 @@ export const createDrawsyBridge = (
     for (const client of session.clients) {
       client.end();
     }
+    void rm(sessionContextPath(session), { recursive: true, force: true });
   };
 
   const requirePublicOrigin = (
@@ -202,10 +311,92 @@ export const createDrawsyBridge = (
     return session;
   };
 
+  const storeContextAsset = async (
+    session: Session,
+    input: {
+      captureId: string;
+      role: "preview" | "source";
+      assetId: string;
+      bytes: Buffer;
+    }
+  ) => {
+    if (
+      !/^[a-f0-9-]{36}$/i.test(input.captureId) ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(input.assetId)
+    ) {
+      throw new Error("Canvas context asset identifier is invalid.");
+    }
+    const metadata = inspectCanvasImage(input.bytes);
+    if (input.role === "preview" && metadata.mimeType !== "image/png") {
+      throw new Error("Canvas context previews must be PNG images.");
+    }
+    const capture = session.contextCaptures.get(input.captureId) || {
+      id: input.captureId,
+      sources: new Map<string, StoredContextAsset>(),
+      createdAt: Date.now(),
+    };
+    if (
+      input.role === "source" &&
+      !capture.sources.has(input.assetId) &&
+      capture.sources.size >= 4
+    ) {
+      throw new Error("A canvas context can include at most 4 source images.");
+    }
+    const extension =
+      metadata.mimeType === "image/jpeg"
+        ? "jpg"
+        : metadata.mimeType.slice("image/".length);
+    const digest = createHash("sha256")
+      .update(input.bytes)
+      .digest("hex")
+      .slice(0, 24);
+    const directory = path.join(sessionContextPath(session), input.captureId);
+    await mkdir(directory, { recursive: true });
+    const assetPath = path.join(
+      directory,
+      `${input.role}-${input.assetId}-${digest}.${extension}`
+    );
+    await writeFile(assetPath, input.bytes, { flag: "wx" }).catch((error) => {
+      if (!isRecord(error) || error.code !== "EEXIST") throw error;
+    });
+    const asset: StoredContextAsset = {
+      id: input.assetId,
+      path: assetPath,
+      mimeType: metadata.mimeType,
+    };
+    if (input.role === "preview") capture.preview = asset;
+    else capture.sources.set(input.assetId, asset);
+    session.contextCaptures.set(input.captureId, capture);
+    return asset;
+  };
+
+  const resolveContextCaptures = (
+    session: Session,
+    references: CanvasContextReference[]
+  ) =>
+    references.map((reference) => {
+      const stored = session.contextCaptures.get(reference.id);
+      if (!stored?.preview) {
+        throw new Error("Canvas context is missing its selection preview.");
+      }
+      return {
+        ...reference,
+        previewPath: stored.preview.path,
+        sourceImages: [...stored.sources.values()].map((source) => ({
+          id: source.id,
+          path: source.path,
+        })),
+      };
+    });
+
   const requestCanvas = (
     session: Session,
-    action: "read" | "apply",
-    operations?: CanvasOperations
+    action: "read" | "apply" | "capture" | "replaceImage",
+    options: {
+      operations?: CanvasOperations;
+      contextRequest?: CanvasContextRequest;
+      imageReplacement?: CanvasImageReplacement;
+    } = {}
   ) => {
     if (!session.clients.size) {
       throw new Error("The Drawsy canvas is not connected.");
@@ -217,7 +408,7 @@ export const createDrawsyBridge = (
         requestId,
         action,
         canvasId: session.canvasId,
-        ...(operations ? { operations } : {}),
+        ...options,
       },
     });
     return new Promise<unknown>((resolve, reject) => {
@@ -227,6 +418,105 @@ export const createDrawsyBridge = (
       }, CANVAS_REQUEST_TIMEOUT_MS);
       session.canvasPending.set(requestId, { resolve, reject, timer });
     });
+  };
+
+  const readImportableImage = async (session: Session, sourcePath: string) => {
+    const normalizedSource = path.isAbsolute(sourcePath)
+      ? path.resolve(sourcePath)
+      : null;
+    const generated =
+      sourcePath === "imagegen://latest"
+        ? session.generatedImages.at(-1)
+        : session.generatedImages.find(
+            (image) =>
+              image.savedPath &&
+              path.resolve(image.savedPath) === normalizedSource
+          );
+    if (generated) {
+      let bytes: Buffer;
+      if (generated.result?.startsWith("data:image/")) {
+        const separator = generated.result.indexOf(",");
+        if (
+          separator < 0 ||
+          !generated.result.slice(0, separator).endsWith(";base64")
+        ) {
+          throw new Error("The generated image payload is invalid.");
+        }
+        bytes = Buffer.from(generated.result.slice(separator + 1), "base64");
+      } else if (generated.savedPath) {
+        const details = await stat(generated.savedPath);
+        if (!details.isFile() || details.size > MAX_CANVAS_ASSET_BYTES) {
+          throw new Error(
+            `The generated image must be at most ${
+              MAX_CANVAS_ASSET_BYTES / (1024 * 1024)
+            } MiB.`
+          );
+        }
+        bytes = await readFile(generated.savedPath);
+      } else {
+        throw new Error("The generated image has no readable raster output.");
+      }
+      return {
+        bytes,
+        sourceName: generated.savedPath
+          ? path.basename(generated.savedPath)
+          : `${generated.id}.png`,
+      };
+    }
+    const asset = await createCanvasImageAsset({
+      workspaceRoot: session.folder.path,
+      sourcePath,
+      x: 0,
+      y: 0,
+      maxWidth: 1,
+    });
+    const separator = asset.file.dataURL.indexOf(",");
+    return {
+      bytes: Buffer.from(asset.file.dataURL.slice(separator + 1), "base64"),
+      sourceName: path.basename(sourcePath),
+    };
+  };
+
+  const importCanvasImage = async (session: Session, value: unknown) => {
+    const input = parseCanvasImageRequest(value);
+    const source = await readImportableImage(session, input.sourcePath);
+    const asset = createCanvasImageAssetFromBytes({ ...input, ...source });
+    await requestCanvas(session, "apply", {
+      operations: {
+        upsertElements: [asset.element],
+        deleteElementIds: [],
+        files: [asset.file],
+      },
+    });
+    return {
+      elementId: asset.elementId,
+      width: asset.width,
+      height: asset.height,
+    };
+  };
+
+  const replaceCanvasImage = async (session: Session, value: unknown) => {
+    if (
+      !isRecord(value) ||
+      typeof value.targetElementId !== "string" ||
+      !value.targetElementId.trim() ||
+      value.targetElementId.length > 128 ||
+      typeof value.sourcePath !== "string" ||
+      !value.sourcePath.trim()
+    ) {
+      throw new Error("Canvas image replacement is invalid.");
+    }
+    const source = await readImportableImage(session, value.sourcePath.trim());
+    const { file, metadata } = createCanvasImageFileFromBytes(source.bytes);
+    await requestCanvas(session, "replaceImage", {
+      imageReplacement: {
+        targetElementId: value.targetElementId.trim(),
+        file,
+        naturalWidth: metadata.width,
+        naturalHeight: metadata.height,
+      },
+    });
+    return { targetElementId: value.targetElementId.trim(), fileId: file.id };
   };
 
   const server = createServer(async (request, response) => {
@@ -258,7 +548,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|image|context|replace-image)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -267,18 +557,61 @@ export const createDrawsyBridge = (
           decodeURIComponent(internalCanvas[1]!)
         );
         if (!session) return;
-        const action = internalCanvas[2] as "read" | "apply";
+        const action = internalCanvas[2] as
+          | "read"
+          | "apply"
+          | "image"
+          | "context"
+          | "replace-image";
         const body = await readJson(request);
-        const result = await requestCanvas(
-          session,
-          action,
-          action === "apply" ? parseCanvasOperations(body) : undefined
-        );
+        const result =
+          action === "image"
+            ? await importCanvasImage(session, body)
+            : action === "replace-image"
+            ? await replaceCanvasImage(session, body)
+            : action === "context"
+            ? resolveContextCaptures(session, [
+                parseCanvasContextReference(
+                  await requestCanvas(session, "capture", {
+                    contextRequest: parseCanvasContextRequest(body),
+                  })
+                ),
+              ])[0]
+            : await requestCanvas(
+                session,
+                action,
+                action === "apply"
+                  ? { operations: parseCanvasOperations(body) }
+                  : undefined
+              );
         json(response, 200, result);
         return;
       }
 
       if (!requirePublicOrigin(request, response)) return;
+
+      const contextAssetMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/context-assets\/([^/]+)\/(preview|source)\/([^/]+)$/
+      );
+      if (request.method === "POST" && contextAssetMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(contextAssetMatch[1]!)
+        );
+        if (!session) return;
+        const asset = await storeContextAsset(session, {
+          captureId: decodeURIComponent(contextAssetMatch[2]!),
+          role: contextAssetMatch[3] as "preview" | "source",
+          assetId: decodeURIComponent(contextAssetMatch[4]!),
+          bytes: await readBytes(request),
+        });
+        json(response, 201, {
+          id: asset.id,
+          mimeType: asset.mimeType,
+        });
+        return;
+      }
 
       if (request.method === "POST" && url.pathname === "/v1/folders/pick") {
         const folder = await pickFolder();
@@ -324,11 +657,36 @@ export const createDrawsyBridge = (
         const id = randomUUID();
         const token = randomBytes(32).toString("base64url");
         const internalSecret = randomBytes(32).toString("base64url");
+        await prepareContextStore(folder.path);
         let sessionRef: Session | null = null;
         const codex = await CodexAppServer.start(
           folder.path,
           { id, secret: internalSecret, bridgeUrl },
-          (event) => sessionRef && emit(sessionRef, event)
+          (event) => sessionRef && emit(sessionRef, event),
+          (image) => {
+            if (!sessionRef) return;
+            const savedPath =
+              image.savedPath && path.isAbsolute(image.savedPath)
+                ? path.resolve(image.savedPath)
+                : undefined;
+            const maxDataUrlLength =
+              Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
+            const result =
+              image.result?.startsWith("data:image/") &&
+              image.result.length <= maxDataUrlLength
+                ? image.result
+                : undefined;
+            if (!savedPath && !result) return;
+            sessionRef.generatedImages.push({
+              id: image.id,
+              savedPath,
+              result,
+              createdAt: Date.now(),
+            });
+            if (sessionRef.generatedImages.length > 8) {
+              sessionRef.generatedImages.shift();
+            }
+          }
         );
         const session: Session = {
           id,
@@ -339,6 +697,8 @@ export const createDrawsyBridge = (
           folder,
           clients: new Set(),
           canvasPending: new Map(),
+          generatedImages: [],
+          contextCaptures: new Map(),
           codex,
           touchedAt: Date.now(),
         };
@@ -401,10 +761,14 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        await session.codex.startTurn(message, {
-          skills: parsePromptTags(body.skills, "skills"),
-          plugins: parsePromptTags(body.plugins, "plugins"),
-        });
+        await session.codex.startTurn(
+          message,
+          {
+            skills: parsePromptTags(body.skills, "skills"),
+            plugins: parsePromptTags(body.plugins, "plugins"),
+          },
+          resolveContextCaptures(session, parseContextReferences(body.contexts))
+        );
         json(response, 202, { accepted: true });
         return;
       }
@@ -536,7 +900,7 @@ export const createDrawsyBridge = (
         error instanceof Error ? error.message : "Unexpected bridge error.";
       const status = message.includes("cancelled")
         ? 409
-        : message.includes("5 MiB")
+        : message.includes("MiB")
         ? 413
         : 500;
       json(response, status, { error: { code: "bridge_error", message } });

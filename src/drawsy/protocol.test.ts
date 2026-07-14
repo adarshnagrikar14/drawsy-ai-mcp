@@ -13,17 +13,80 @@ import net from "node:net";
 import test from "node:test";
 
 import { createDrawsyBridge } from "./bridge.js";
-import { parseCanvasOperations } from "./protocol.js";
+import {
+  parseCanvasContextReference,
+  parseCanvasContextRequest,
+  parseCanvasOperations,
+} from "./protocol.js";
 
 test("canvas operations reject malformed and ambiguous input", () => {
   assert.deepEqual(parseCanvasOperations({}), {
     upsertElements: [],
     deleteElementIds: [],
+    files: [],
   });
   assert.throws(() => parseCanvasOperations({ upsertElements: {} }), /array/);
   assert.throws(
     () => parseCanvasOperations({ deleteElementIds: [""] }),
     /non-empty/
+  );
+  assert.throws(
+    () =>
+      parseCanvasOperations({
+        files: [
+          {
+            id: "image-1",
+            mimeType: "image/png",
+            dataURL: "data:image/jpeg;base64,AA==",
+            created: Date.now(),
+          },
+        ],
+      }),
+    /invalid canvas image asset/
+  );
+});
+
+test("canvas context stays bounded and uses one targeting mode", () => {
+  assert.deepEqual(
+    parseCanvasContextRequest({ elementIds: ["image-1", "image-1"] }),
+    {
+      elementIds: ["image-1"],
+      includeSourceImages: true,
+      maxDimension: 2048,
+    }
+  );
+  assert.deepEqual(
+    parseCanvasContextRequest({
+      bounds: { x: -20, y: 30, width: 800, height: 600 },
+      includeSourceImages: false,
+      maxDimension: 4096,
+    }),
+    {
+      bounds: { x: -20, y: 30, width: 800, height: 600 },
+      includeSourceImages: false,
+      maxDimension: 4096,
+    }
+  );
+  assert.throws(
+    () =>
+      parseCanvasContextRequest({
+        elementIds: ["image-1"],
+        bounds: { x: 0, y: 0, width: 10, height: 10 },
+      }),
+    /either elementIds or bounds/
+  );
+  assert.throws(
+    () => parseCanvasContextRequest({ bounds: { x: 0, y: 0, width: 0 } }),
+    /bounds are invalid/
+  );
+  assert.throws(
+    () =>
+      parseCanvasContextReference({
+        id: "not-a-session-capture",
+        elementIds: [],
+        bounds: { x: 0, y: 0, width: 10, height: 10 },
+      }),
+    /reference is invalid/
   );
 });
 
@@ -43,7 +106,15 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
   const fakeCodex = path.join(root, "fake-codex.mjs");
+  const generatedImage = path.join(root, "generated-raccoon.png");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedFolder));
+  await writeFile(
+    generatedImage,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    )
+  );
   const canonicalFolder = await realpath(selectedFolder);
   await writeFile(
     fakeCodex,
@@ -74,7 +145,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
-    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {} }, authStatus: "unsupported" },
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {} }, authStatus: "unsupported" },
     { name: "computer-use", tools: {}, authStatus: "unsupported" }
   ] } });
   if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
@@ -90,6 +161,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "completed", exitCode: 0 } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "inProgress" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
+    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "inProgress", result: "" } } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
+      generatedImage
+    )} } } });
     send({ method: "warning", params: { threadId: "thread-1", message: "Test warning" } });
     send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId: "thread-1", turnId: "turn-1" } });
     send({ id: "server-time", method: "currentTime/read", params: {} });
@@ -184,7 +259,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ["documents@openai-primary-runtime"]
     );
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 2, authStatus: "unsupported" },
+      { name: "drawsy", toolCount: 5, authStatus: "unsupported" },
     ]);
 
     const settingsResponse = await fetch(
@@ -201,6 +276,27 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.equal(settingsResponse.status, 200);
 
+    const contextId = "11111111-1111-4111-8111-111111111111";
+    const contextBytes = await readFile(generatedImage);
+    for (const [role, assetId] of [
+      ["preview", "selection"],
+      ["source", "source-1"],
+    ] as const) {
+      const assetResponse = await fetch(
+        `${bridge.address}/v1/sessions/${session.id}/context-assets/${contextId}/${role}/${assetId}`,
+        {
+          method: "POST",
+          headers: {
+            origin,
+            authorization: `Bearer ${session.token}`,
+            "content-type": "image/png",
+          },
+          body: contextBytes,
+        }
+      );
+      assert.equal(assetResponse.status, 201);
+    }
+
     const turnResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/turns`,
       {
@@ -215,6 +311,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
             },
           ],
           plugins: [{ name: "Documents", path: "/plugins/documents" }],
+          contexts: [
+            {
+              id: contextId,
+              elementIds: ["image-1", "note-1"],
+              bounds: { x: 10, y: 20, width: 300, height: 240 },
+            },
+          ],
         }),
       }
     );
@@ -272,6 +375,20 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .approval_mode,
       "approve"
     );
+    assert.equal(
+      thread.params.config.mcp_servers.drawsy.tools.add_image_from_file
+        .approval_mode,
+      "approve"
+    );
+    assert.equal(
+      thread.params.config.mcp_servers.drawsy.tools
+        .replace_canvas_image_from_file.approval_mode,
+      "approve"
+    );
+    assert.equal(
+      thread.params.config.mcp_servers.drawsy.env.DRAWSY_WORKSPACE_ROOT,
+      canonicalFolder
+    );
     const turn = log.find((message) => message.method === "turn/start");
     assert.equal(turn.params.permissions, undefined);
     assert.deepEqual(turn.params.sandboxPolicy, {
@@ -282,14 +399,31 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       excludeSlashTmp: true,
     });
     assert.deepEqual(turn.params.environments, []);
-    assert.deepEqual(turn.params.input, [
+    assert.equal(turn.params.input[0].type, "skill");
+    assert.equal(turn.params.input[1].type, "mention");
+    assert.match(turn.params.input[2].text, /Canvas context 1/);
+    assert.match(turn.params.input[2].text, /2 selected elements/);
+    assert.equal(turn.params.input[3].type, "localImage");
+    assert.match(
+      turn.params.input[3].path,
+      new RegExp(
+        `\\.drawsy/context/${session.id}/${contextId}/preview-selection-`
+      )
+    );
+    assert.equal(turn.params.input[3].detail, "original");
+    assert.equal(turn.params.input[4].type, "localImage");
+    assert.match(
+      turn.params.input[4].path,
+      new RegExp(
+        `\\.drawsy/context/${session.id}/${contextId}/source-source-1-`
+      )
+    );
+    assert.deepEqual(turn.params.input.slice(5), [
       {
-        type: "skill",
-        name: "documents",
-        path: "/plugins/documents/skills/documents/SKILL.md",
+        type: "text",
+        text: "Inspect the folder.",
+        text_elements: [],
       },
-      { type: "mention", name: "Documents", path: "/plugins/documents" },
-      { type: "text", text: "Inspect the folder.", text_elements: [] },
     ]);
     const settings = log.find(
       (message) => message.method === "thread/settings/update"
@@ -299,6 +433,78 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.deepEqual(settings.params.sandboxPolicy, turn.params.sandboxPolicy);
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
+
+    const internalSecret =
+      thread.params.config.mcp_servers.drawsy.env.DRAWSY_SESSION_SECRET;
+    const imageRequest = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/image`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${internalSecret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sourcePath: generatedImage,
+          x: 40,
+          y: 60,
+          maxWidth: 320,
+        }),
+      }
+    );
+    let canvasRequest: {
+      data: { requestId: string; operations: Record<string, any> };
+    } | null = null;
+    while (!canvasRequest) {
+      const event = await reader.read();
+      assert.equal(event.done, false);
+      const lines = new TextDecoder()
+        .decode(event.value)
+        .split("\n")
+        .filter(Boolean);
+      const match = lines
+        .map((line) => JSON.parse(line))
+        .find((value) => value.type === "canvas.request");
+      if (match) canvasRequest = match;
+    }
+    assert.equal(canvasRequest.data.operations.files.length, 1);
+    assert.match(
+      canvasRequest.data.operations.files[0].dataURL,
+      /^data:image\/png;base64,/
+    );
+    assert.deepEqual(
+      {
+        type: canvasRequest.data.operations.upsertElements[0].type,
+        x: canvasRequest.data.operations.upsertElements[0].x,
+        y: canvasRequest.data.operations.upsertElements[0].y,
+        width: canvasRequest.data.operations.upsertElements[0].width,
+        height: canvasRequest.data.operations.upsertElements[0].height,
+      },
+      { type: "image", x: 40, y: 60, width: 320, height: 320 }
+    );
+    const canvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({
+          requestId: canvasRequest.data.requestId,
+          ok: true,
+          data: { ok: true },
+        }),
+      }
+    );
+    assert.equal(canvasResponse.status, 200);
+    const imageResponse = await imageRequest;
+    assert.equal(imageResponse.status, 200);
+    assert.deepEqual(await imageResponse.json(), {
+      elementId: canvasRequest.data.operations.upsertElements[0].id,
+      width: 320,
+      height: 320,
+    });
 
     await reader.cancel();
     const closeResponse = await fetch(
