@@ -4,6 +4,8 @@ export const CANVAS_REQUEST_TIMEOUT_MS = 30_000;
 
 export type JsonObject = Record<string, unknown>;
 
+export type DrawsySurfaceKind = "canvas" | "presentation";
+
 export type CanvasSnapshot = {
   canvasId: string;
   canvasName: string;

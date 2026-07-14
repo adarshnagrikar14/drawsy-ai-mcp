@@ -210,6 +210,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         selectionId: picked.selectionId,
         canvasId: "canvas-1",
         canvasName: "Canvas 1",
+        surfaceKind: "presentation",
       }),
     }).then((response) => response.json())) as { id: string; token: string };
 
@@ -356,6 +357,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(thread.params.permissions, ":workspace");
     assert.deepEqual(thread.params.runtimeWorkspaceRoots, [canonicalFolder]);
     assert.equal(thread.params.approvalPolicy, "never");
+    assert.match(
+      thread.params.developerInstructions,
+      /This surface is a presentation/
+    );
+    assert.match(
+      thread.params.developerInstructions,
+      /contextual guidance, not an absolute rule/
+    );
     assert.equal(thread.params.config.mcp_servers.inherited.enabled, false);
     assert.equal(thread.params.config.mcp_servers.drawsy.enabled, true);
     assert.equal(
