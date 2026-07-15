@@ -4,7 +4,8 @@ export const CANVAS_REQUEST_TIMEOUT_MS = 30_000;
 
 export type JsonObject = Record<string, unknown>;
 
-export type DrawsySurfaceKind = "canvas" | "presentation";
+export type DrawsySurfaceKind =
+  "canvas" | "presentation" | "kanban" | "jira" | "neutral";
 
 export type CanvasSnapshot = {
   canvasId: string;
@@ -131,12 +132,7 @@ export type AgentPromptTag = {
 };
 
 export type ConnectorCapability =
-  | "mail"
-  | "calendar"
-  | "drive"
-  | "notion"
-  | "slack"
-  | "github";
+  "mail" | "calendar" | "drive" | "notion" | "slack" | "github";
 
 export type AgentConnectorSource = {
   connectionId: string;
@@ -155,6 +151,15 @@ export type AgentConnectorTurn = {
   turnId: string;
   sources: AgentConnectorSource[];
   grants: AgentConnectorGrant[];
+};
+
+export type AiResourceId = "kanban" | "jira";
+
+export type AgentResourceTurn = {
+  turnId: string;
+  resources: AiResourceId[];
+  grant: string;
+  expiresAt: number;
 };
 
 export type BridgeEvent =
@@ -197,7 +202,7 @@ const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "drive",
   "notion",
   "slack",
-  "github",
+  "github"
 ]);
 
 export const isConnectorCapability = (
@@ -246,9 +251,7 @@ export const parseAgentConnectorTurn = (
       !isRecord(source) ||
       Object.keys(source).some(
         (key) =>
-          !["connectionId", "capability", "label", "accountLabel"].includes(
-            key
-          )
+          !["connectionId", "capability", "label", "accountLabel"].includes(key)
       ) ||
       !isConnectorCapability(source.capability)
     ) {
@@ -266,7 +269,7 @@ export const parseAgentConnectorTurn = (
         source.accountLabel,
         "source accountLabel",
         256
-      ),
+      )
     };
   });
   if (
@@ -303,19 +306,54 @@ export const parseAgentConnectorTurn = (
         256
       ),
       grant: boundedConnectorString(grant.grant, "connector grant", 8_192),
-      expiresAt: grant.expiresAt,
+      expiresAt: grant.expiresAt
     };
   });
-  if (new Set(grants.map((grant) => grant.connectionId)).size !== grants.length) {
+  if (
+    new Set(grants.map((grant) => grant.connectionId)).size !== grants.length
+  ) {
     throw new Error("Connector grants must be unique per connection.");
   }
-  const grantedConnections = new Set(
-    grants.map((grant) => grant.connectionId)
-  );
+  const grantedConnections = new Set(grants.map((grant) => grant.connectionId));
   if (sources.some((source) => !grantedConnections.has(source.connectionId))) {
     throw new Error("Every connected source requires a matching grant.");
   }
   return { turnId, sources, grants };
+};
+
+const AI_RESOURCES = new Set<AiResourceId>(["kanban", "jira"]);
+
+export const parseAgentResourceTurn = (
+  value: unknown
+): AgentResourceTurn | null => {
+  if (value === undefined) return null;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some(
+      (key) => !["turnId", "resources", "grant", "expiresAt"].includes(key)
+    ) ||
+    !Array.isArray(value.resources) ||
+    value.resources.length < 1 ||
+    value.resources.length > AI_RESOURCES.size ||
+    value.resources.some(
+      (resource) =>
+        typeof resource !== "string" ||
+        !AI_RESOURCES.has(resource as AiResourceId)
+    ) ||
+    new Set(value.resources).size !== value.resources.length ||
+    typeof value.expiresAt !== "number" ||
+    !Number.isInteger(value.expiresAt) ||
+    value.expiresAt <= Date.now() ||
+    value.expiresAt > Date.now() + 15 * 60 * 1000
+  ) {
+    throw new Error("A Drawsy resource grant is invalid or expired.");
+  }
+  return {
+    turnId: boundedConnectorString(value.turnId, "resource turnId", 256),
+    resources: value.resources as AiResourceId[],
+    grant: boundedConnectorString(value.grant, "resource grant", 8_192),
+    expiresAt: value.expiresAt
+  };
 };
 
 export const parseCanvasImageRequest = (value: unknown): CanvasImageRequest => {
@@ -363,8 +401,8 @@ export const parseCanvasImageRequest = (value: unknown): CanvasImageRequest => {
       ? {}
       : {
           frameId:
-            value.frameId === null ? null : (value.frameId as string).trim(),
-        }),
+            value.frameId === null ? null : (value.frameId as string).trim()
+        })
   };
 };
 
@@ -388,7 +426,7 @@ const parseContextBounds = (value: unknown): CanvasContextBounds => {
     x: value.x as number,
     y: value.y as number,
     width: value.width as number,
-    height: value.height as number,
+    height: value.height as number
   };
 };
 
@@ -426,7 +464,7 @@ export const parseCanvasContextRequest = (
     ...(elementIds ? { elementIds } : {}),
     ...(hasBounds ? { bounds: parseContextBounds(value.bounds) } : {}),
     includeSourceImages: value.includeSourceImages !== false,
-    maxDimension: maxDimension as number,
+    maxDimension: maxDimension as number
   };
 };
 
@@ -443,7 +481,7 @@ export const parseCanvasContextReference = (
   return {
     id: value.id,
     elementIds: parseElementIds(value.elementIds),
-    bounds: parseContextBounds(value.bounds),
+    bounds: parseContextBounds(value.bounds)
   };
 };
 
@@ -488,7 +526,7 @@ export const parseCanvasOperations = (value: unknown): CanvasOperations => {
       id: file.id,
       mimeType: file.mimeType,
       dataURL: file.dataURL,
-      created: file.created,
+      created: file.created
     } as CanvasFile;
   });
   if (new Set(parsedFiles.map((file) => file.id)).size !== parsedFiles.length) {

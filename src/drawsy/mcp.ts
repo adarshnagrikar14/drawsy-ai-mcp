@@ -4,18 +4,33 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
 
-import { MAX_BODY_BYTES, parseCanvasOperations } from "./protocol.js";
+import {
+  MAX_BODY_BYTES,
+  parseCanvasOperations,
+  type DrawsySurfaceKind
+} from "./protocol.js";
 
 const bridgeUrl = new URL(process.env.DRAWSY_BRIDGE_URL ?? "");
 const sessionId = process.env.DRAWSY_SESSION_ID;
 const sessionSecret = process.env.DRAWSY_SESSION_SECRET;
 const workspaceRoot = process.env.DRAWSY_WORKSPACE_ROOT;
+const surfaceKind = process.env.DRAWSY_SURFACE_KIND as
+  DrawsySurfaceKind | undefined;
+const validSurfaceKinds = new Set<DrawsySurfaceKind>([
+  "canvas",
+  "presentation",
+  "kanban",
+  "jira",
+  "neutral"
+]);
 
 if (
   !["127.0.0.1", "::1", "localhost"].includes(bridgeUrl.hostname) ||
   !sessionId ||
   !sessionSecret ||
-  !workspaceRoot
+  !workspaceRoot ||
+  !surfaceKind ||
+  !validSurfaceKinds.has(surfaceKind)
 ) {
   throw new Error(
     "Drawsy MCP requires a loopback bridge, session scope, and workspace root."
@@ -35,10 +50,10 @@ const callBridge = async (
       method: "POST",
       headers: {
         authorization: `Bearer ${sessionSecret}`,
-        "content-type": "application/json",
+        "content-type": "application/json"
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(35_000),
+      signal: AbortSignal.timeout(35_000)
     }
   );
   const text = await response.text();
@@ -74,10 +89,10 @@ const callConnectorBridge = async (
       method: "POST",
       headers: {
         authorization: `Bearer ${sessionSecret}`,
-        "content-type": "application/json",
+        "content-type": "application/json"
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(35_000),
+      signal: AbortSignal.timeout(35_000)
     }
   );
   const text = await response.text();
@@ -96,13 +111,63 @@ const callConnectorBridge = async (
   return text;
 };
 
+const callResourceBridge = async (body: unknown = {}) => {
+  const response = await fetch(
+    new URL(
+      `/internal/sessions/${encodeURIComponent(sessionId)}/resources/execute`,
+      bridgeUrl
+    ),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${sessionSecret}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(35_000)
+    }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    let message = `Drawsy resource bridge failed (${response.status}).`;
+    try {
+      const payload = JSON.parse(text) as { error?: { message?: unknown } };
+      if (typeof payload.error?.message === "string") {
+        message = payload.error.message;
+      }
+    } catch {
+      // Keep the status-only error for malformed bridge responses.
+    }
+    throw new Error(message);
+  }
+  return text;
+};
+
+const resourceToolResult = async (body: unknown, fallback: string) => {
+  try {
+    return {
+      content: [{ type: "text" as const, text: await callResourceBridge(body) }]
+    };
+  } catch (error) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: error instanceof Error ? error.message : fallback
+        }
+      ]
+    };
+  }
+};
+
 const connectorCapabilitySchema = z.enum([
   "mail",
   "calendar",
   "drive",
   "notion",
   "slack",
-  "github",
+  "github"
 ]);
 const connectorConnectionIdSchema = z
   .string()
@@ -120,247 +185,281 @@ const isoTimestampSchema = z
   .min(1)
   .max(64)
   .refine((value) => Number.isFinite(Date.parse(value)), {
-    message: "Use an ISO 8601 timestamp with an explicit offset.",
+    message: "Use an ISO 8601 timestamp with an explicit offset."
   });
+const githubRepositorySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+  .describe("Repository in owner/name form, from list_github_repositories.");
+const githubPathSchema = z
+  .string()
+  .trim()
+  .max(2_048)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      value.split("/").every((segment) => segment && segment !== ".."),
+    { message: "Use a repository-relative path without .. segments." }
+  );
+const githubRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .describe(
+    "Optional branch, tag, or commit SHA. Omit for the default branch."
+  );
+const githubPageCursorSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{1,6}$/)
+  .optional();
 
 const server = new McpServer({
-  name: "Drawsy Current Canvas",
-  version: "0.1.0",
+  name: "Drawsy",
+  version: "0.1.0"
 });
 
-server.registerTool(
-  "read_current_canvas",
-  {
-    description:
-      "Read the live Drawsy canvas attached to this chat. This tool is already scoped; it cannot read any other canvas.",
-    inputSchema: z.object({}),
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  },
-  async () => ({
-    content: [{ type: "text", text: await callBridge("read") }],
-  })
-);
+if (surfaceKind === "canvas" || surfaceKind === "presentation") {
+  server.registerTool(
+    "read_current_canvas",
+    {
+      description:
+        "Read the live Drawsy canvas attached to this chat. This tool is already scoped; it cannot read any other canvas.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false }
+    },
+    async () => ({
+      content: [{ type: "text", text: await callBridge("read") }]
+    })
+  );
 
-server.registerTool(
-  "apply_canvas_changes",
-  {
-    description:
-      "Apply element upserts and deletions to the attached Drawsy canvas. Read the canvas first. Omitted elements remain unchanged.",
-    inputSchema: z.object({
-      upsertElements: z
-        .array(z.record(z.string(), z.unknown()))
-        .describe("New or updated Excalidraw elements as JSON objects."),
-      deleteElementIds: z
-        .array(z.string().min(1))
-        .default([])
-        .describe("IDs of existing elements to delete."),
-    }),
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  async ({ upsertElements, deleteElementIds }) => {
-    if (
-      Buffer.byteLength(JSON.stringify(upsertElements), "utf8") > MAX_BODY_BYTES
-    ) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `Canvas change exceeds ${
-              MAX_BODY_BYTES / (1024 * 1024)
-            } MiB.`,
-          },
-        ],
-      };
-    }
-    try {
-      const operations = parseCanvasOperations({
-        upsertElements,
-        deleteElementIds,
-      });
-      await callBridge("apply", operations);
-      return {
-        content: [{ type: "text", text: "Current Drawsy canvas updated." }],
-      };
-    } catch (error) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              error instanceof Error ? error.message : "Invalid canvas change.",
-          },
-        ],
-      };
-    }
-  }
-);
-
-server.registerTool(
-  "add_image_from_file",
-  {
-    description:
-      "Add a real PNG, JPEG, GIF, or WebP to the attached Drawsy canvas. Local files must be inside the selected folder. After image generation, pass the exact saved path returned by the generator; Drawsy securely recognizes that session-owned output. If no saved path was returned, use imagegen://latest. The image is fitted proportionally within the requested bounds.",
-    inputSchema: z.object({
-      sourcePath: z
-        .string()
-        .trim()
-        .min(1)
-        .describe(
-          "Absolute or workspace-relative path to the generated image."
-        ),
-      x: z.number().finite().min(-1_000_000).max(1_000_000),
-      y: z.number().finite().min(-1_000_000).max(1_000_000),
-      maxWidth: z.number().finite().positive().max(100_000),
-      maxHeight: z.number().finite().positive().max(100_000).optional(),
-      elementId: z.string().trim().min(1).max(128).optional(),
-      frameId: z.string().trim().min(1).max(128).nullable().optional(),
-    }),
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  async ({ sourcePath, x, y, maxWidth, maxHeight, elementId, frameId }) => {
-    try {
-      const result = JSON.parse(
-        await callBridge("image", {
-          sourcePath,
-          x,
-          y,
-          maxWidth,
-          maxHeight,
-          elementId,
-          frameId,
-        })
-      ) as { elementId: string; width: number; height: number };
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Image added to the current canvas as ${result.elementId} (${result.width} × ${result.height}).`,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              error instanceof Error
-                ? error.message
-                : "Image could not be added.",
-          },
-        ],
-      };
-    }
-  }
-);
-
-server.registerTool(
-  "capture_canvas_context",
-  {
-    description:
-      "Capture a precise visual region of the current Drawsy canvas as a local PNG, with pristine source-image paths when requested. Use elementIds for a semantic selection or bounds for an exact area. The returned files are session-scoped inside the selected folder and can be inspected or passed to image editing.",
-    inputSchema: z
-      .object({
-        elementIds: z
-          .array(z.string().trim().min(1).max(128))
-          .min(1)
-          .max(250)
-          .optional(),
-        bounds: z
-          .object({
-            x: z.number().finite().min(-1_000_000).max(1_000_000),
-            y: z.number().finite().min(-1_000_000).max(1_000_000),
-            width: z.number().finite().positive().max(2_000_000),
-            height: z.number().finite().positive().max(2_000_000),
-          })
-          .optional(),
-        includeSourceImages: z.boolean().default(true),
-        maxDimension: z.number().int().min(256).max(4096).default(2048),
-      })
-      .refine((value) => Boolean(value.elementIds) !== Boolean(value.bounds), {
-        message: "Choose either elementIds or bounds.",
+  server.registerTool(
+    "apply_canvas_changes",
+    {
+      description:
+        "Apply element upserts and deletions to the attached Drawsy canvas. Read the canvas first. Omitted elements remain unchanged.",
+      inputSchema: z.object({
+        upsertElements: z
+          .array(z.record(z.string(), z.unknown()))
+          .describe("New or updated Excalidraw elements as JSON objects."),
+        deleteElementIds: z
+          .array(z.string().min(1))
+          .default([])
+          .describe("IDs of existing elements to delete.")
       }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  },
-  async (input) => {
-    try {
-      const context = JSON.parse(await callBridge("context", input)) as {
-        id: string;
-        previewPath: string;
-        elementIds: string[];
-        sourceImages: Array<{ id: string; path: string }>;
-      };
-      const sources = context.sourceImages.length
-        ? ` Pristine source images: ${context.sourceImages
-            .map((source) => `${source.id}=${source.path}`)
-            .join(", ")}.`
-        : "";
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Canvas context ${context.id} captured at ${context.previewPath}.${sources}`,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              error instanceof Error
-                ? error.message
-                : "Canvas context could not be captured.",
-          },
-        ],
-      };
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async ({ upsertElements, deleteElementIds }) => {
+      if (
+        Buffer.byteLength(JSON.stringify(upsertElements), "utf8") >
+        MAX_BODY_BYTES
+      ) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Canvas change exceeds ${MAX_BODY_BYTES / (1024 * 1024)} MiB.`
+            }
+          ]
+        };
+      }
+      try {
+        const operations = parseCanvasOperations({
+          upsertElements,
+          deleteElementIds
+        });
+        await callBridge("apply", operations);
+        return {
+          content: [{ type: "text", text: "Current Drawsy canvas updated." }]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Invalid canvas change."
+            }
+          ]
+        };
+      }
     }
-  }
-);
+  );
 
-server.registerTool(
-  "replace_canvas_image_from_file",
-  {
-    description:
-      "Replace the raster content of an existing image element on the current canvas while preserving its geometry, frame, ordering, bindings, and element identity. Use the exact image element id and a selected-folder path or recognized image-generation output path.",
-    inputSchema: z.object({
-      targetElementId: z.string().trim().min(1).max(128),
-      sourcePath: z.string().trim().min(1),
-    }),
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  async ({ targetElementId, sourcePath }) => {
-    try {
-      await callBridge("replace-image", { targetElementId, sourcePath });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Canvas image ${targetElementId} replaced while preserving its placement.`,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              error instanceof Error
-                ? error.message
-                : "Canvas image could not be replaced.",
-          },
-        ],
-      };
+  server.registerTool(
+    "add_image_from_file",
+    {
+      description:
+        "Add a real PNG, JPEG, GIF, or WebP to the attached Drawsy canvas. Local files must be inside the selected folder. After image generation, pass the exact saved path returned by the generator; Drawsy securely recognizes that session-owned output. If no saved path was returned, use imagegen://latest. The image is fitted proportionally within the requested bounds.",
+      inputSchema: z.object({
+        sourcePath: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            "Absolute or workspace-relative path to the generated image."
+          ),
+        x: z.number().finite().min(-1_000_000).max(1_000_000),
+        y: z.number().finite().min(-1_000_000).max(1_000_000),
+        maxWidth: z.number().finite().positive().max(100_000),
+        maxHeight: z.number().finite().positive().max(100_000).optional(),
+        elementId: z.string().trim().min(1).max(128).optional(),
+        frameId: z.string().trim().min(1).max(128).nullable().optional()
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async ({ sourcePath, x, y, maxWidth, maxHeight, elementId, frameId }) => {
+      try {
+        const result = JSON.parse(
+          await callBridge("image", {
+            sourcePath,
+            x,
+            y,
+            maxWidth,
+            maxHeight,
+            elementId,
+            frameId
+          })
+        ) as { elementId: string; width: number; height: number };
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Image added to the current canvas as ${result.elementId} (${result.width} × ${result.height}).`
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Image could not be added."
+            }
+          ]
+        };
+      }
     }
-  }
-);
+  );
+
+  server.registerTool(
+    "capture_canvas_context",
+    {
+      description:
+        "Capture a precise visual region of the current Drawsy canvas as a local PNG, with pristine source-image paths when requested. Use elementIds for a semantic selection or bounds for an exact area. The returned files are session-scoped inside the selected folder and can be inspected or passed to image editing.",
+      inputSchema: z
+        .object({
+          elementIds: z
+            .array(z.string().trim().min(1).max(128))
+            .min(1)
+            .max(250)
+            .optional(),
+          bounds: z
+            .object({
+              x: z.number().finite().min(-1_000_000).max(1_000_000),
+              y: z.number().finite().min(-1_000_000).max(1_000_000),
+              width: z.number().finite().positive().max(2_000_000),
+              height: z.number().finite().positive().max(2_000_000)
+            })
+            .optional(),
+          includeSourceImages: z.boolean().default(true),
+          maxDimension: z.number().int().min(256).max(4096).default(2048)
+        })
+        .refine(
+          (value) => Boolean(value.elementIds) !== Boolean(value.bounds),
+          {
+            message: "Choose either elementIds or bounds."
+          }
+        ),
+      annotations: { readOnlyHint: true, destructiveHint: false }
+    },
+    async (input) => {
+      try {
+        const context = JSON.parse(await callBridge("context", input)) as {
+          id: string;
+          previewPath: string;
+          elementIds: string[];
+          sourceImages: Array<{ id: string; path: string }>;
+        };
+        const sources = context.sourceImages.length
+          ? ` Pristine source images: ${context.sourceImages
+              .map((source) => `${source.id}=${source.path}`)
+              .join(", ")}.`
+          : "";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Canvas context ${context.id} captured at ${context.previewPath}.${sources}`
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Canvas context could not be captured."
+            }
+          ]
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "replace_canvas_image_from_file",
+    {
+      description:
+        "Replace the raster content of an existing image element on the current canvas while preserving its geometry, frame, ordering, bindings, and element identity. Use the exact image element id and a selected-folder path or recognized image-generation output path.",
+      inputSchema: z.object({
+        targetElementId: z.string().trim().min(1).max(128),
+        sourcePath: z.string().trim().min(1)
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async ({ targetElementId, sourcePath }) => {
+      try {
+        await callBridge("replace-image", { targetElementId, sourcePath });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Canvas image ${targetElementId} replaced while preserving its placement.`
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Canvas image could not be replaced."
+            }
+          ]
+        };
+      }
+    }
+  );
+}
 
 server.registerTool(
   "list_connected_sources",
@@ -368,14 +467,12 @@ server.registerTool(
     description:
       "List only the connected accounts the user explicitly attached to this turn. Returns capabilities and connectionIds for disambiguating multiple accounts.",
     inputSchema: z.object({}),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async () => {
     try {
       return {
-        content: [
-          { type: "text", text: await callConnectorBridge("list") },
-        ],
+        content: [{ type: "text", text: await callConnectorBridge("list") }]
       };
     } catch (error) {
       return {
@@ -386,9 +483,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Connected sources could not be listed.",
-          },
-        ],
+                : "Connected sources could not be listed."
+          }
+        ]
       };
     }
   }
@@ -410,9 +507,9 @@ server.registerTool(
       label: z.string().trim().min(1).max(256).optional(),
       includeSpamTrash: z.boolean().default(false),
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(20),
+      limit: z.number().int().min(1).max(100).default(20)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -423,10 +520,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "mail",
               kind: "mail_messages",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -437,9 +534,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Mail messages could not be listed.",
-          },
-        ],
+                : "Mail messages could not be listed."
+          }
+        ]
       };
     }
   }
@@ -453,9 +550,9 @@ server.registerTool(
     inputSchema: z.object({
       connectionId: connectorConnectionIdSchema,
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(100),
+      limit: z.number().int().min(1).max(100).default(100)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -466,10 +563,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "calendar",
               kind: "calendars",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -480,9 +577,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Calendars could not be listed.",
-          },
-        ],
+                : "Calendars could not be listed."
+          }
+        ]
       };
     }
   }
@@ -517,9 +614,9 @@ server.registerTool(
         .optional()
         .describe("Optional event text filter; omit for a complete range."),
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(100),
+      limit: z.number().int().min(1).max(100).default(100)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -530,10 +627,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "calendar",
               kind: "calendar_events",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -544,9 +641,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Calendar events could not be listed.",
-          },
-        ],
+                : "Calendar events could not be listed."
+          }
+        ]
       };
     }
   }
@@ -565,9 +662,9 @@ server.registerTool(
         .enum(["modifiedTime desc", "createdTime desc", "name"])
         .default("modifiedTime desc"),
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(50),
+      limit: z.number().int().min(1).max(100).default(50)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -578,10 +675,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "drive",
               kind: "drive_files",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -592,9 +689,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Drive files could not be listed.",
-          },
-        ],
+                : "Drive files could not be listed."
+          }
+        ]
       };
     }
   }
@@ -614,10 +711,14 @@ server.registerTool(
         .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/)
         .optional(),
       visibility: z.enum(["all", "public", "private"]).default("all"),
-      cursor: z.string().trim().regex(/^\d{1,3}$/).optional(),
-      limit: z.number().int().min(1).max(100).default(30),
+      cursor: z
+        .string()
+        .trim()
+        .regex(/^\d{1,3}$/)
+        .optional(),
+      limit: z.number().int().min(1).max(100).default(30)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -628,10 +729,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "github",
               kind: "github_repositories",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -642,9 +743,155 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "GitHub repositories could not be listed.",
-          },
-        ],
+                : "GitHub repositories could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_github_repository_contents",
+  {
+    description:
+      "Browse one directory in a selected GitHub repository without cloning it. Omit path for the repository root, then follow directory paths as needed. Use read_connected_item on a file result to read its exact text content. Binary files are identified but not returned as text.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema,
+      repository: githubRepositorySchema,
+      path: githubPathSchema.optional(),
+      ref: githubRefSchema.optional(),
+      cursor: githubPageCursorSchema,
+      limit: z.number().int().min(1).max(100).default(100)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("query", {
+              capability: "github",
+              kind: "github_repository_contents",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "GitHub repository contents could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_github_issues",
+  {
+    description:
+      "List issues in one selected GitHub repository. Pull requests are intentionally excluded; use list_github_pull_requests for them. Use read_connected_item on an issue result to read its full body and metadata.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema,
+      repository: githubRepositorySchema,
+      state: z.enum(["open", "closed", "all"]).default("open"),
+      labels: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+      since: isoTimestampSchema.optional(),
+      sort: z.enum(["created", "updated", "comments"]).default("updated"),
+      direction: z.enum(["asc", "desc"]).default("desc"),
+      cursor: githubPageCursorSchema,
+      limit: z.number().int().min(1).max(100).default(30)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("query", {
+              capability: "github",
+              kind: "github_issues",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "GitHub issues could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_github_pull_requests",
+  {
+    description:
+      "List pull requests in one selected GitHub repository with optional branch filters. Use read_connected_item on a pull-request result for its full body, branches, merge state, and change statistics.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema,
+      repository: githubRepositorySchema,
+      state: z.enum(["open", "closed", "all"]).default("open"),
+      head: z.string().trim().min(1).max(256).optional(),
+      base: z.string().trim().min(1).max(256).optional(),
+      sort: z
+        .enum(["created", "updated", "popularity", "long-running"])
+        .default("updated"),
+      direction: z.enum(["asc", "desc"]).default("desc"),
+      cursor: githubPageCursorSchema,
+      limit: z.number().int().min(1).max(100).default(30)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("query", {
+              capability: "github",
+              kind: "github_pull_requests",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "GitHub pull requests could not be listed."
+          }
+        ]
       };
     }
   }
@@ -659,13 +906,11 @@ server.registerTool(
       connectionId: connectorConnectionIdSchema,
       query: z.string().trim().min(1).max(2_000).optional(),
       object: z.enum(["page", "data_source"]).optional(),
-      sortDirection: z
-        .enum(["ascending", "descending"])
-        .default("descending"),
+      sortDirection: z.enum(["ascending", "descending"]).default("descending"),
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(50),
+      limit: z.number().int().min(1).max(100).default(50)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -676,10 +921,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "notion",
               kind: "notion_content",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -690,9 +935,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Notion content could not be listed.",
-          },
-        ],
+                : "Notion content could not be listed."
+          }
+        ]
       };
     }
   }
@@ -706,9 +951,9 @@ server.registerTool(
     inputSchema: z.object({
       connectionId: connectorConnectionIdSchema,
       cursor: connectorCursorSchema,
-      limit: z.number().int().min(1).max(100).default(100),
+      limit: z.number().int().min(1).max(100).default(100)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -719,10 +964,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "slack",
               kind: "slack_channels",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -733,9 +978,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Slack channels could not be listed.",
-          },
-        ],
+                : "Slack channels could not be listed."
+          }
+        ]
       };
     }
   }
@@ -762,9 +1007,11 @@ server.registerTool(
         .min(1)
         .max(15)
         .default(15)
-        .describe("Page size kept within Slack's current distributed-app limit."),
+        .describe(
+          "Page size kept within Slack's current distributed-app limit."
+        )
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -775,10 +1022,10 @@ server.registerTool(
             text: await callConnectorBridge("query", {
               capability: "slack",
               kind: "slack_messages",
-              ...input,
-            }),
-          },
-        ],
+              ...input
+            })
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -789,9 +1036,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "Slack messages could not be listed.",
-          },
-        ],
+                : "Slack messages could not be listed."
+          }
+        ]
       };
     }
   }
@@ -815,9 +1062,9 @@ server.registerTool(
         ),
       query: z.string().trim().min(1).max(2_000),
       cursor: z.string().trim().min(1).max(4_096).optional(),
-      limit: z.number().int().min(1).max(20).default(10),
+      limit: z.number().int().min(1).max(20).default(10)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
@@ -825,9 +1072,9 @@ server.registerTool(
         content: [
           {
             type: "text",
-            text: await callConnectorBridge("search", input),
-          },
-        ],
+            text: await callConnectorBridge("search", input)
+          }
+        ]
       };
     } catch (error) {
       return {
@@ -838,9 +1085,9 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "The connected source could not be searched.",
-          },
-        ],
+                : "The connected source could not be searched."
+          }
+        ]
       };
     }
   }
@@ -862,16 +1109,16 @@ server.registerTool(
         .describe(
           "Exact connectionId from list_connected_sources. Required when multiple matching accounts are attached."
         ),
-      resourceId: z.string().trim().min(1).max(4_096),
+      resourceId: z.string().trim().min(1).max(4_096)
     }),
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false }
   },
   async (input) => {
     try {
       return {
         content: [
-          { type: "text", text: await callConnectorBridge("read", input) },
-        ],
+          { type: "text", text: await callConnectorBridge("read", input) }
+        ]
       };
     } catch (error) {
       return {
@@ -882,12 +1129,335 @@ server.registerTool(
             text:
               error instanceof Error
                 ? error.message
-                : "The connected item could not be read.",
-          },
-        ],
+                : "The connected item could not be read."
+          }
+        ]
       };
     }
   }
+);
+
+const drawsyEntityIdSchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/);
+const jiraScopeSchema = {
+  connectionId: z.string().trim().min(1).max(256),
+  cloudId: z.string().trim().min(1).max(256)
+};
+const pageInputSchema = {
+  startAt: z.number().int().nonnegative().default(0),
+  limit: z.number().int().min(1).max(100).default(50)
+};
+
+if (surfaceKind === "kanban") {
+  server.registerTool(
+    "read_current_kanban_board",
+    {
+      description:
+        "Read the Kanban board currently open beside this chat, including columns, cards, checklists, canvas links, and members. The bridge supplies its exact id.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false }
+    },
+    async () =>
+      resourceToolResult(
+        { operation: "kanban_read_current_board" },
+        "The current Kanban board could not be read."
+      )
+  );
+}
+
+server.registerTool(
+  "list_kanban_boards",
+  {
+    description:
+      "List the Drawsy Kanban boards the signed-in user can access. Available only when @kanban is attached to this turn.",
+    inputSchema: z.object({}),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async () =>
+    resourceToolResult(
+      { operation: "kanban_list_boards" },
+      "Kanban boards could not be listed."
+    )
+);
+
+server.registerTool(
+  "read_kanban_board",
+  {
+    description:
+      "Read one Drawsy Kanban board with its columns, cards, checklists, canvas links, and members. Use list_kanban_boards first when the board id is unknown.",
+    inputSchema: z.object({ boardId: drawsyEntityIdSchema }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_read_board", ...input },
+      "The Kanban board could not be read."
+    )
+);
+
+server.registerTool(
+  "create_kanban_card",
+  {
+    description:
+      "Create a card in an existing Drawsy Kanban column. Read the board first for exact ids. Set linkCurrentCanvas only when the new card should retain the current canvas as its source.",
+    inputSchema: z.object({
+      boardId: drawsyEntityIdSchema,
+      columnId: drawsyEntityIdSchema,
+      title: z.string().trim().min(1).max(200),
+      description: z.string().max(20_000).default(""),
+      priority: z.enum(["low", "medium", "high"]).nullable().default(null),
+      progress: z.number().int().min(0).max(100).default(0),
+      dueDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .nullable()
+        .default(null),
+      assigneeIds: z.array(drawsyEntityIdSchema).max(100).default([]),
+      linkCurrentCanvas: z.boolean().default(false)
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_create_card", ...input },
+      "The Kanban card could not be created."
+    )
+);
+
+server.registerTool(
+  "update_kanban_card",
+  {
+    description:
+      "Update explicit fields on an existing Drawsy Kanban card without changing omitted fields. Read the board first for exact ids and current values.",
+    inputSchema: z.object({
+      boardId: drawsyEntityIdSchema,
+      cardId: drawsyEntityIdSchema,
+      title: z.string().trim().min(1).max(200).optional(),
+      description: z.string().max(20_000).optional(),
+      priority: z.enum(["low", "medium", "high"]).nullable().optional(),
+      progress: z.number().int().min(0).max(100).optional(),
+      dueDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .nullable()
+        .optional(),
+      assigneeIds: z.array(drawsyEntityIdSchema).max(100).optional()
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_update_card", ...input },
+      "The Kanban card could not be updated."
+    )
+);
+
+server.registerTool(
+  "move_kanban_card",
+  {
+    description:
+      "Move an existing Drawsy Kanban card to the end of another existing column. Read the board first for exact ids.",
+    inputSchema: z.object({
+      boardId: drawsyEntityIdSchema,
+      cardId: drawsyEntityIdSchema,
+      columnId: drawsyEntityIdSchema
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_move_card", ...input },
+      "The Kanban card could not be moved."
+    )
+);
+
+server.registerTool(
+  "create_kanban_checklist_item",
+  {
+    description:
+      "Add one checklist item to an existing Drawsy Kanban card. Read the board first for exact ids.",
+    inputSchema: z.object({
+      boardId: drawsyEntityIdSchema,
+      cardId: drawsyEntityIdSchema,
+      title: z.string().trim().min(1).max(200)
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_create_checklist_item", ...input },
+      "The checklist item could not be created."
+    )
+);
+
+server.registerTool(
+  "update_kanban_checklist_item",
+  {
+    description:
+      "Rename or complete an existing Drawsy Kanban checklist item. Omitted fields remain unchanged.",
+    inputSchema: z.object({
+      boardId: drawsyEntityIdSchema,
+      itemId: drawsyEntityIdSchema,
+      title: z.string().trim().min(1).max(200).optional(),
+      completed: z.boolean().optional()
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "kanban_update_checklist_item", ...input },
+      "The checklist item could not be updated."
+    )
+);
+
+if (surfaceKind === "canvas") {
+  server.registerTool(
+    "link_current_canvas_to_kanban_card",
+    {
+      description:
+        "Link the current Drawsy canvas to an existing Kanban card as its source. The bridge supplies the current canvas id; never invent one.",
+      inputSchema: z.object({
+        boardId: drawsyEntityIdSchema,
+        cardId: drawsyEntityIdSchema
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async (input) =>
+      resourceToolResult(
+        { operation: "kanban_link_current_canvas", ...input },
+        "The current canvas could not be linked."
+      )
+  );
+}
+
+server.registerTool(
+  "list_jira_connections",
+  {
+    description:
+      "List Jira connections and accessible sites attached through Drawsy. Use this first to obtain exact connectionId and cloudId values. Available only when @jira is attached.",
+    inputSchema: z.object({}),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async () =>
+    resourceToolResult(
+      { operation: "jira_list_connections" },
+      "Jira connections could not be listed."
+    )
+);
+
+server.registerTool(
+  "list_jira_projects",
+  {
+    description:
+      "List projects in one connected Jira site. Results are permission-filtered by Jira and paginated.",
+    inputSchema: z.object({ ...jiraScopeSchema, ...pageInputSchema }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_list_projects", ...input },
+      "Jira projects could not be listed."
+    )
+);
+
+server.registerTool(
+  "search_jira_issues",
+  {
+    description:
+      "Search issues in one connected Jira site using JQL. Use exact project keys from list_jira_projects and paginate with nextPageToken. This tool is read-only.",
+    inputSchema: z.object({
+      ...jiraScopeSchema,
+      jql: z.string().trim().min(1).max(10_000),
+      nextPageToken: z.string().trim().min(1).max(4_096).optional(),
+      limit: z.number().int().min(1).max(100).default(50)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_search_issues", ...input },
+      "Jira issues could not be searched."
+    )
+);
+
+server.registerTool(
+  "read_jira_issue",
+  {
+    description:
+      "Read one Jira issue with normalized description and recent comments using its exact key. This tool is read-only.",
+    inputSchema: z.object({
+      ...jiraScopeSchema,
+      issueKey: z.string().trim().min(1).max(256)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_read_issue", ...input },
+      "The Jira issue could not be read."
+    )
+);
+
+server.registerTool(
+  "list_jira_boards",
+  {
+    description:
+      "List Jira Software boards, optionally constrained to a project key. Results are permission-filtered and paginated.",
+    inputSchema: z.object({
+      ...jiraScopeSchema,
+      projectKey: z.string().trim().min(1).max(256).optional(),
+      ...pageInputSchema
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_list_boards", ...input },
+      "Jira boards could not be listed."
+    )
+);
+
+server.registerTool(
+  "list_jira_sprints",
+  {
+    description:
+      "List sprints for one Jira Software board, optionally filtered by state. Use list_jira_boards first for the exact board id.",
+    inputSchema: z.object({
+      ...jiraScopeSchema,
+      boardId: z.string().trim().min(1).max(256),
+      state: z.enum(["active", "future", "closed"]).optional(),
+      ...pageInputSchema
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_list_sprints", ...input },
+      "Jira sprints could not be listed."
+    )
+);
+
+server.registerTool(
+  "list_jira_backlog",
+  {
+    description:
+      "List normalized issues in one Jira Software board backlog. Use list_jira_boards first for the exact board id.",
+    inputSchema: z.object({
+      ...jiraScopeSchema,
+      boardId: z.string().trim().min(1).max(256),
+      ...pageInputSchema
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) =>
+    resourceToolResult(
+      { operation: "jira_list_backlog", ...input },
+      "The Jira backlog could not be listed."
+    )
 );
 
 await server.connect(new StdioServerTransport());

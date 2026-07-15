@@ -22,6 +22,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
   await writeFile(path.join(testRoot, "outside.png"), png);
   let appliedBody = "";
   const connectorRequests: Array<{ url: string; body: unknown }> = [];
+  const resourceRequests: unknown[] = [];
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, `Bearer ${secret}`);
     if (request.url?.endsWith("/connectors/list")) {
@@ -33,9 +34,9 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
               connectionId: "google-one",
               capability: "mail",
               label: "gmail",
-              accountLabel: "person@example.com",
-            },
-          ],
+              accountLabel: "person@example.com"
+            }
+          ]
         })
       );
       return;
@@ -56,21 +57,29 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
               capability: "mail",
               kind: "mail_messages",
               items: [{ id: "opaque-latest", title: "Latest message" }],
-              nextCursor: null,
+              nextCursor: null
             })
           : request.url.endsWith("/search")
-          ? JSON.stringify({
-              operation: "search",
-              capability: "mail",
-              items: [{ id: "opaque-message", title: "Project update" }],
-              nextCursor: null,
-            })
-          : JSON.stringify({
-              operation: "read",
-              capability: "mail",
-              item: { id: "opaque-message", content: "Status is green." },
-            })
+            ? JSON.stringify({
+                operation: "search",
+                capability: "mail",
+                items: [{ id: "opaque-message", title: "Project update" }],
+                nextCursor: null
+              })
+            : JSON.stringify({
+                operation: "read",
+                capability: "mail",
+                item: { id: "opaque-message", content: "Status is green." }
+              })
       );
+      return;
+    }
+    if (request.url?.endsWith("/resources/execute")) {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      resourceRequests.push(JSON.parse(body));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ boards: [{ id: "board-0001" }] }));
       return;
     }
     if (request.url?.endsWith("/read")) {
@@ -85,7 +94,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
         response.writeHead(500, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
-            error: { message: "The image must be inside the selected folder." },
+            error: { message: "The image must be inside the selected folder." }
           })
         );
         return;
@@ -109,9 +118,9 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
           sourceImages: [
             {
               id: "source-1",
-              path: path.join(workspaceRoot, ".drawsy/context/source.png"),
-            },
-          ],
+              path: path.join(workspaceRoot, ".drawsy/context/source.png")
+            }
+          ]
         })
       );
       return;
@@ -138,8 +147,9 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       DRAWSY_SESSION_ID: "session-1",
       DRAWSY_SESSION_SECRET: secret,
       DRAWSY_WORKSPACE_ROOT: workspaceRoot,
+      DRAWSY_SURFACE_KIND: "canvas"
     },
-    stderr: "pipe",
+    stderr: "pipe"
   });
   const client = new Client({ name: "drawsy-test", version: "0.1.0" });
 
@@ -150,19 +160,37 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "add_image_from_file",
       "apply_canvas_changes",
       "capture_canvas_context",
+      "create_kanban_card",
+      "create_kanban_checklist_item",
+      "link_current_canvas_to_kanban_card",
       "list_calendar_events",
       "list_calendars",
       "list_connected_sources",
       "list_drive_files",
+      "list_github_issues",
+      "list_github_pull_requests",
       "list_github_repositories",
+      "list_github_repository_contents",
+      "list_jira_backlog",
+      "list_jira_boards",
+      "list_jira_connections",
+      "list_jira_projects",
+      "list_jira_sprints",
+      "list_kanban_boards",
       "list_mail_messages",
       "list_notion_content",
       "list_slack_channels",
       "list_slack_messages",
+      "move_kanban_card",
       "read_connected_item",
       "read_current_canvas",
+      "read_jira_issue",
+      "read_kanban_board",
       "replace_canvas_image_from_file",
       "search_connected_source",
+      "search_jira_issues",
+      "update_kanban_card",
+      "update_kanban_checklist_item"
     ]);
     assert.equal(
       tools.tools.some(
@@ -173,21 +201,21 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
 
     const read = await client.callTool({
       name: "read_current_canvas",
-      arguments: {},
+      arguments: {}
     });
     assert.match(JSON.stringify(read.content), /canvas-1/);
     const apply = await client.callTool({
       name: "apply_canvas_changes",
       arguments: {
         upsertElements: [{ id: "r1", type: "rectangle" }],
-        deleteElementIds: ["old"],
-      },
+        deleteElementIds: ["old"]
+      }
     });
     assert.equal(apply.isError, undefined);
     assert.deepEqual(JSON.parse(appliedBody), {
       upsertElements: [{ id: "r1", type: "rectangle" }],
       deleteElementIds: ["old"],
-      files: [],
+      files: []
     });
 
     appliedBody = "";
@@ -197,15 +225,15 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
         sourcePath: "generated.png",
         x: 40,
         y: 60,
-        maxWidth: 320,
-      },
+        maxWidth: 320
+      }
     });
     assert.equal(image.isError, undefined);
     assert.deepEqual(JSON.parse(appliedBody), {
       sourcePath: "generated.png",
       x: 40,
       y: 60,
-      maxWidth: 320,
+      maxWidth: 320
     });
     assert.match(JSON.stringify(image.content), /image-1 \(320 × 320\)/);
 
@@ -216,8 +244,8 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
         sourcePath: "../outside.png",
         x: 0,
         y: 0,
-        maxWidth: 100,
-      },
+        maxWidth: 100
+      }
     });
     assert.equal(escaped.isError, true);
     assert.match(JSON.stringify(escaped.content), /selected folder/);
@@ -228,14 +256,14 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       arguments: {
         elementIds: ["image-1", "note-1"],
         includeSourceImages: true,
-        maxDimension: 2048,
-      },
+        maxDimension: 2048
+      }
     });
     assert.equal(context.isError, undefined);
     assert.deepEqual(JSON.parse(appliedBody), {
       elementIds: ["image-1", "note-1"],
       includeSourceImages: true,
-      maxDimension: 2048,
+      maxDimension: 2048
     });
     assert.match(JSON.stringify(context.content), /selection\.png/);
     assert.match(JSON.stringify(context.content), /source\.png/);
@@ -245,26 +273,32 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       name: "replace_canvas_image_from_file",
       arguments: {
         targetElementId: "image-1",
-        sourcePath: "generated.png",
-      },
+        sourcePath: "generated.png"
+      }
     });
     assert.equal(replacement.isError, undefined);
     assert.deepEqual(JSON.parse(appliedBody), {
       targetElementId: "image-1",
-      sourcePath: "generated.png",
+      sourcePath: "generated.png"
     });
 
     const sources = await client.callTool({
       name: "list_connected_sources",
-      arguments: {},
+      arguments: {}
     });
     assert.match(JSON.stringify(sources.content), /person@example\.com/);
+    const boards = await client.callTool({
+      name: "list_kanban_boards",
+      arguments: {}
+    });
+    assert.match(JSON.stringify(boards.content), /board-0001/);
+    assert.deepEqual(resourceRequests, [{ operation: "kanban_list_boards" }]);
     const latestMail = await client.callTool({
       name: "list_mail_messages",
       arguments: {
         connectionId: "google-one",
-        limit: 1,
-      },
+        limit: 1
+      }
     });
     assert.match(JSON.stringify(latestMail.content), /opaque-latest/);
     const search = await client.callTool({
@@ -272,8 +306,8 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       arguments: {
         capability: "mail",
         connectionId: "google-one",
-        query: "project update",
-      },
+        query: "project update"
+      }
     });
     assert.match(JSON.stringify(search.content), /opaque-message/);
     const connectedItem = await client.callTool({
@@ -281,8 +315,8 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       arguments: {
         capability: "mail",
         connectionId: "google-one",
-        resourceId: "opaque-message",
-      },
+        resourceId: "opaque-message"
+      }
     });
     assert.match(JSON.stringify(connectedItem.content), /Status is green/);
     assert.deepEqual(connectorRequests, [
@@ -293,8 +327,8 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
           kind: "mail_messages",
           connectionId: "google-one",
           includeSpamTrash: false,
-          limit: 1,
-        },
+          limit: 1
+        }
       },
       {
         url: "/internal/sessions/session-1/connectors/search",
@@ -302,18 +336,61 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
           capability: "mail",
           connectionId: "google-one",
           query: "project update",
-          limit: 10,
-        },
+          limit: 10
+        }
       },
       {
         url: "/internal/sessions/session-1/connectors/read",
         body: {
           capability: "mail",
           connectionId: "google-one",
-          resourceId: "opaque-message",
-        },
-      },
+          resourceId: "opaque-message"
+        }
+      }
     ]);
+
+    const listSurfaceTools = async (surfaceKind: "kanban" | "neutral") => {
+      const surfaceTransport = new StdioClientTransport({
+        command: process.execPath,
+        args: [mcpPath],
+        env: {
+          PATH: process.env.PATH || "",
+          DRAWSY_BRIDGE_URL: `http://127.0.0.1:${address.port}`,
+          DRAWSY_SESSION_ID: "session-1",
+          DRAWSY_SESSION_SECRET: secret,
+          DRAWSY_WORKSPACE_ROOT: workspaceRoot,
+          DRAWSY_SURFACE_KIND: surfaceKind
+        },
+        stderr: "pipe"
+      });
+      const surfaceClient = new Client({
+        name: `drawsy-${surfaceKind}-test`,
+        version: "0.1.0"
+      });
+      try {
+        await surfaceClient.connect(surfaceTransport);
+        return (await surfaceClient.listTools()).tools.map((tool) => tool.name);
+      } finally {
+        await surfaceClient.close();
+      }
+    };
+    const neutralTools = await listSurfaceTools("neutral");
+    assert.equal(neutralTools.includes("read_current_canvas"), false);
+    assert.equal(neutralTools.includes("read_current_kanban_board"), false);
+    assert.equal(
+      neutralTools.includes("link_current_canvas_to_kanban_card"),
+      false
+    );
+    assert.equal(neutralTools.includes("list_kanban_boards"), true);
+    assert.equal(neutralTools.includes("list_jira_connections"), true);
+
+    const kanbanTools = await listSurfaceTools("kanban");
+    assert.equal(kanbanTools.includes("read_current_kanban_board"), true);
+    assert.equal(kanbanTools.includes("read_current_canvas"), false);
+    assert.equal(
+      kanbanTools.includes("link_current_canvas_to_kanban_card"),
+      false
+    );
   } finally {
     await client.close();
     await new Promise<void>((resolve, reject) =>

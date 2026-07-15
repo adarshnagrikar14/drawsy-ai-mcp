@@ -1,6 +1,6 @@
 # Drawsy AI MCP
 
-Local, canvas-scoped MCP and Codex app-server bridge for Drawsy.
+Local, surface-scoped MCP and Codex app-server bridge for Drawsy.
 
 ## Current scope
 
@@ -8,10 +8,11 @@ Local, canvas-scoped MCP and Codex app-server bridge for Drawsy.
 - Uses Codex's `:workspace` permission profile with the selected folder as the only runtime workspace root.
 - Uses `approvalPolicy: "never"`: work inside the boundary proceeds without prompts; escape attempts are denied.
 - Disables command network access, web search, apps, plugins, browser/computer tools, and inherited MCP servers.
-- Injects the Drawsy MCP into every Codex thread. The model never receives a canvas ID and cannot select another canvas.
+- Injects a surface-aware Drawsy MCP into every Codex thread. Canvas and presentation chats receive only their current visual surface; a tagged Kanban turn can resolve the exact open board; tagged Jira remains read-only; neutral pages receive no product context unless the user explicitly adds a resource tag.
 - Exposes only sources tagged in the current message. Each tagged turn receives exact, short-lived, read-only grants; provider credentials never enter Codex or the local MCP process.
-- Gives attached sources provider-native read tools for mail filters, calendar ranges, recent Drive and Notion content, Slack channels/history, GitHub repositories, keyword search, and deep item reads.
-- Exposes targeted canvas reads, upserts, deletes, real raster-image insertion/replacement, and selection or region context capture. Existing elements are not deleted by omission.
+- Treats `@kanban` and `@jira` as first-party Drawsy resources rather than external connector accounts. Their separate turn grant reaches only the Drawsy backend: Jira remains read-only, while Kanban mutations reuse its role-aware, revisioned, audited command service.
+- Gives attached sources provider-native read tools for mail filters, calendar ranges, recent Drive and Notion content, Slack channels/history, and deep item reads. GitHub additionally supports selected-repository discovery, directory browsing, exact text-file reads, issues, and pull requests; it never clones or writes to repositories.
+- On canvas surfaces, exposes targeted reads, upserts, deletes, real raster-image insertion/replacement, and selection or region context capture. Existing elements are not deleted by omission, and canvas tools are absent from non-canvas sessions.
 - Local images stay restricted to the selected folder. Image-generator outputs cross through a short-lived, session-only capability recorded from Codex itself; all images are MIME-sniffed, size-limited, content-hashed, and transferred with their Excalidraw file record instead of rendering as placeholders.
 - Canvas context combines a rendered PNG (including visible annotations) with pristine selected raster sources. Context files live under the selected folder's ignored `.drawsy/context` directory and are removed when the session closes.
 - Uses the user's existing local Codex authentication. Drawsy has no login flow and never reads or stores credentials.
@@ -32,7 +33,7 @@ The bridge listens at `http://127.0.0.1:3031`. Drawsy's development app is alrea
 corepack pnpm run test:drawsy
 ```
 
-The focused tests cover the stdio MCP surface, loopback authentication, turn-scoped connector grants, inherited-tool suppression, folder permission profile, raster validation, image transfer, context materialization, path-escape rejection, and bridge session lifecycle. They use a fake Codex process and do not open a browser or contact the internet.
+The focused tests cover the stdio MCP surface, loopback authentication, turn-scoped connector and first-party resource grants, inherited-tool suppression, folder permission profile, raster validation, image transfer, context materialization, path-escape rejection, and bridge session lifecycle. They use a fake Codex process and do not open a browser or contact the internet.
 
 ## Configuration
 

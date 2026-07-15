@@ -2,12 +2,12 @@ import {
   createHash,
   randomBytes,
   randomUUID,
-  timingSafeEqual,
+  timingSafeEqual
 } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
-  type ServerResponse,
+  type ServerResponse
 } from "node:http";
 import {
   mkdir,
@@ -15,7 +15,7 @@ import {
   readdir,
   rm,
   stat,
-  writeFile,
+  writeFile
 } from "node:fs/promises";
 import path from "node:path";
 
@@ -25,7 +25,7 @@ import {
   createCanvasImageAsset,
   createCanvasImageAssetFromBytes,
   createCanvasImageFileFromBytes,
-  inspectCanvasImage,
+  inspectCanvasImage
 } from "./image-asset.js";
 import {
   CANVAS_REQUEST_TIMEOUT_MS,
@@ -37,8 +37,10 @@ import {
   parseCanvasImageRequest,
   parseCanvasOperations,
   parseAgentConnectorTurn,
+  parseAgentResourceTurn,
   isConnectorCapability,
   type AgentConnectorTurn,
+  type AgentResourceTurn,
   type AgentSettingsPatch,
   type AgentPromptTag,
   type BridgeEvent,
@@ -46,7 +48,7 @@ import {
   type CanvasContextRequest,
   type CanvasImageReplacement,
   type CanvasOperations,
-  type DrawsySurfaceKind,
+  type DrawsySurfaceKind
 } from "./protocol.js";
 
 type FolderSelection = {
@@ -79,9 +81,11 @@ type Session = {
   id: string;
   token: string;
   internalSecret: string;
-  canvasId: string;
+  canvasId: string | null;
   canvasName: string;
   surfaceKind: DrawsySurfaceKind;
+  surfaceId: string | null;
+  surfaceName: string;
   folder: FolderSelection;
   clients: Set<ServerResponse>;
   canvasPending: Map<string, CanvasPending>;
@@ -93,6 +97,7 @@ type Session = {
   }>;
   contextCaptures: Map<string, StoredContextCapture>;
   activeConnectorTurn: AgentConnectorTurn | null;
+  activeResourceTurn: AgentResourceTurn | null;
   codex: CodexAppServer;
   touchedAt: number;
 };
@@ -109,7 +114,7 @@ class BridgeRequestError extends Error {
 
 const json = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
+    "content-type": "application/json; charset=utf-8"
   });
   response.end(JSON.stringify(body));
 };
@@ -258,7 +263,9 @@ export const createDrawsyBridge = (
   );
   if (
     (connectorBackendUrl.protocol !== "https:" &&
-      !(connectorBackendUrl.protocol === "http:" && connectorBackendIsLoopback)) ||
+      !(
+        connectorBackendUrl.protocol === "http:" && connectorBackendIsLoopback
+      )) ||
     connectorBackendUrl.username ||
     connectorBackendUrl.password
   ) {
@@ -275,6 +282,7 @@ export const createDrawsyBridge = (
       (event.type === "turn.status" && event.data.status !== "inProgress")
     ) {
       session.activeConnectorTurn = null;
+      session.activeResourceTurn = null;
     }
     const line = `${JSON.stringify(event)}\n`;
     for (const client of session.clients) {
@@ -291,7 +299,7 @@ export const createDrawsyBridge = (
     await mkdir(contextPath, { recursive: true });
     try {
       await writeFile(path.join(drawsyPath, ".gitignore"), "*\n", {
-        flag: "wx",
+        flag: "wx"
       });
     } catch (error) {
       if (!isRecord(error) || error.code !== "EEXIST") throw error;
@@ -327,7 +335,7 @@ export const createDrawsyBridge = (
     const origin = request.headers.origin;
     if (!origin || !allowedOrigins.has(origin)) {
       json(response, 403, {
-        error: { code: "origin_denied", message: "Origin is not allowed." },
+        error: { code: "origin_denied", message: "Origin is not allowed." }
       });
       return false;
     }
@@ -344,7 +352,7 @@ export const createDrawsyBridge = (
     const session = sessions.get(sessionId);
     if (!session || !safeEqual(bearerToken(request), session.token)) {
       json(response, 401, {
-        error: { code: "authentication_required", message: "Invalid session." },
+        error: { code: "authentication_required", message: "Invalid session." }
       });
       return null;
     }
@@ -362,8 +370,8 @@ export const createDrawsyBridge = (
       json(response, 401, {
         error: {
           code: "authentication_required",
-          message: "Invalid MCP scope.",
-        },
+          message: "Invalid MCP scope."
+        }
       });
       return null;
     }
@@ -442,33 +450,43 @@ export const createDrawsyBridge = (
       action === "search"
         ? new Set(["capability", "connectionId", "query", "cursor", "limit"])
         : action === "read"
-        ? new Set(["capability", "connectionId", "resourceId"])
-        : new Set([
-            "capability",
-            "connectionId",
-            "kind",
-            "query",
-            "after",
-            "before",
-            "from",
-            "to",
-            "subject",
-            "label",
-            "includeSpamTrash",
-            "calendarId",
-            "channelId",
-            "startTime",
-            "endTime",
-            "timeZone",
-            "mimeType",
-            "orderBy",
-            "object",
-            "sortDirection",
-            "owner",
-            "visibility",
-            "cursor",
-            "limit",
-          ]);
+          ? new Set(["capability", "connectionId", "resourceId"])
+          : new Set([
+              "capability",
+              "connectionId",
+              "kind",
+              "query",
+              "after",
+              "before",
+              "from",
+              "to",
+              "subject",
+              "label",
+              "includeSpamTrash",
+              "calendarId",
+              "channelId",
+              "startTime",
+              "endTime",
+              "timeZone",
+              "mimeType",
+              "orderBy",
+              "object",
+              "sortDirection",
+              "owner",
+              "visibility",
+              "repository",
+              "path",
+              "ref",
+              "state",
+              "labels",
+              "since",
+              "sort",
+              "direction",
+              "head",
+              "base",
+              "cursor",
+              "limit"
+            ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
       throw new BridgeRequestError(
         400,
@@ -508,7 +526,7 @@ export const createDrawsyBridge = (
         operation: "search",
         query,
         ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}),
-        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+        ...(typeof body.limit === "number" ? { limit: body.limit } : {})
       };
     } else if (action === "read") {
       const resourceId =
@@ -522,8 +540,11 @@ export const createDrawsyBridge = (
       }
       operation = { operation: "read", resourceId };
     } else {
-      const { capability: _capability, connectionId: _connectionId, ...input } =
-        body;
+      const {
+        capability: _capability,
+        connectionId: _connectionId,
+        ...input
+      } = body;
       operation = { operation: "list", ...input };
     }
     const response = await fetch(
@@ -532,16 +553,16 @@ export const createDrawsyBridge = (
         method: "POST",
         headers: {
           authorization: `Bearer ${grant.grant}`,
-          "content-type": "application/json",
+          "content-type": "application/json"
         },
         body: JSON.stringify({
           sessionId: session.id,
           turnId: session.activeConnectorTurn!.turnId,
           connectionId: source.connectionId,
           capability: source.capability,
-          ...operation,
+          ...operation
         }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(30_000)
       }
     );
     const text = await readFetchText(response, 512 * 1024);
@@ -571,6 +592,139 @@ export const createDrawsyBridge = (
     return payload;
   };
 
+  const executeResourceRequest = async (
+    session: Session,
+    body: Record<string, unknown>
+  ) => {
+    const active = session.activeResourceTurn;
+    if (!active) {
+      throw new BridgeRequestError(
+        403,
+        "resource_not_attached",
+        "No Drawsy resource was attached to this turn."
+      );
+    }
+    if (active.expiresAt <= Date.now()) {
+      throw new BridgeRequestError(
+        401,
+        "resource_grant_expired",
+        "Drawsy resource access expired. Send the message again."
+      );
+    }
+    const operation =
+      typeof body.operation === "string" ? body.operation.trim() : "";
+    const resource = operation.startsWith("kanban_")
+      ? "kanban"
+      : operation.startsWith("jira_")
+        ? "jira"
+        : null;
+    if (!resource || !active.resources.includes(resource)) {
+      throw new BridgeRequestError(
+        403,
+        "resource_not_attached",
+        "That Drawsy resource was not attached to this turn."
+      );
+    }
+    if (
+      Object.keys(body).some((key) =>
+        ["sessionId", "turnId", "grant"].includes(key)
+      )
+    ) {
+      throw new BridgeRequestError(
+        400,
+        "resource_request_invalid",
+        "The Drawsy resource request contains a protected field."
+      );
+    }
+    const requestBody = { ...body };
+    if (operation === "kanban_read_current_board") {
+      if (session.surfaceKind !== "kanban" || !session.surfaceId) {
+        throw new BridgeRequestError(
+          400,
+          "resource_request_invalid",
+          "No current Kanban board is attached to this chat."
+        );
+      }
+      requestBody.operation = "kanban_read_board";
+      requestBody.boardId = session.surfaceId;
+    }
+    if (operation === "kanban_link_current_canvas") {
+      if (session.surfaceKind !== "canvas" || !session.canvasId) {
+        throw new BridgeRequestError(
+          400,
+          "resource_request_invalid",
+          "Only a Drawsy canvas can be linked to a Kanban card."
+        );
+      }
+      requestBody.operation = "kanban_link_canvas";
+      requestBody.canvasId = session.canvasId;
+    }
+    if (operation === "kanban_create_card") {
+      const linkCurrentCanvas = requestBody.linkCurrentCanvas;
+      delete requestBody.linkCurrentCanvas;
+      if (linkCurrentCanvas === true) {
+        if (session.surfaceKind !== "canvas" || !session.canvasId) {
+          throw new BridgeRequestError(
+            400,
+            "resource_request_invalid",
+            "Only a Drawsy canvas can be linked to a Kanban card."
+          );
+        }
+        requestBody.linkCanvasId = session.canvasId;
+      } else if (
+        linkCurrentCanvas !== undefined &&
+        linkCurrentCanvas !== false
+      ) {
+        throw new BridgeRequestError(
+          400,
+          "resource_request_invalid",
+          "linkCurrentCanvas must be true or false."
+        );
+      }
+    }
+    const response = await fetch(
+      new URL("/v1/ai/resources/execute", connectorBackendUrl),
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${active.grant}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          ...requestBody,
+          sessionId: session.id,
+          turnId: active.turnId
+        }),
+        signal: AbortSignal.timeout(30_000)
+      }
+    );
+    const text = await readFetchText(response, 512 * 1024);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new BridgeRequestError(
+        502,
+        "resource_response_invalid",
+        "The Drawsy resource returned an invalid response."
+      );
+    }
+    if (!response.ok) {
+      const message =
+        isRecord(payload) &&
+        isRecord(payload.error) &&
+        typeof payload.error.message === "string"
+          ? payload.error.message
+          : `Drawsy resource request failed (${response.status}).`;
+      throw new BridgeRequestError(
+        response.status >= 400 && response.status < 500 ? response.status : 502,
+        "resource_request_failed",
+        message
+      );
+    }
+    return payload;
+  };
+
   const storeContextAsset = async (
     session: Session,
     input: {
@@ -593,7 +747,7 @@ export const createDrawsyBridge = (
     const capture = session.contextCaptures.get(input.captureId) || {
       id: input.captureId,
       sources: new Map<string, StoredContextAsset>(),
-      createdAt: Date.now(),
+      createdAt: Date.now()
     };
     if (
       input.role === "source" &&
@@ -622,7 +776,7 @@ export const createDrawsyBridge = (
     const asset: StoredContextAsset = {
       id: input.assetId,
       path: assetPath,
-      mimeType: metadata.mimeType,
+      mimeType: metadata.mimeType
     };
     if (input.role === "preview") capture.preview = asset;
     else capture.sources.set(input.assetId, asset);
@@ -644,8 +798,8 @@ export const createDrawsyBridge = (
         previewPath: stored.preview.path,
         sourceImages: [...stored.sources.values()].map((source) => ({
           id: source.id,
-          path: source.path,
-        })),
+          path: source.path
+        }))
       };
     });
 
@@ -658,6 +812,13 @@ export const createDrawsyBridge = (
       imageReplacement?: CanvasImageReplacement;
     } = {}
   ) => {
+    if (
+      (session.surfaceKind !== "canvas" &&
+        session.surfaceKind !== "presentation") ||
+      !session.canvasId
+    ) {
+      throw new Error("No Drawsy canvas is attached to this chat.");
+    }
     if (!session.clients.size) {
       throw new Error("The Drawsy canvas is not connected.");
     }
@@ -668,8 +829,8 @@ export const createDrawsyBridge = (
         requestId,
         action,
         canvasId: session.canvasId,
-        ...options,
-      },
+        ...options
+      }
     });
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -720,7 +881,7 @@ export const createDrawsyBridge = (
         bytes,
         sourceName: generated.savedPath
           ? path.basename(generated.savedPath)
-          : `${generated.id}.png`,
+          : `${generated.id}.png`
       };
     }
     const asset = await createCanvasImageAsset({
@@ -728,12 +889,12 @@ export const createDrawsyBridge = (
       sourcePath,
       x: 0,
       y: 0,
-      maxWidth: 1,
+      maxWidth: 1
     });
     const separator = asset.file.dataURL.indexOf(",");
     return {
       bytes: Buffer.from(asset.file.dataURL.slice(separator + 1), "base64"),
-      sourceName: path.basename(sourcePath),
+      sourceName: path.basename(sourcePath)
     };
   };
 
@@ -745,13 +906,13 @@ export const createDrawsyBridge = (
       operations: {
         upsertElements: [asset.element],
         deleteElementIds: [],
-        files: [asset.file],
-      },
+        files: [asset.file]
+      }
     });
     return {
       elementId: asset.elementId,
       width: asset.width,
-      height: asset.height,
+      height: asset.height
     };
   };
 
@@ -773,8 +934,8 @@ export const createDrawsyBridge = (
         targetElementId: value.targetElementId.trim(),
         file,
         naturalWidth: metadata.width,
-        naturalHeight: metadata.height,
-      },
+        naturalHeight: metadata.height
+      }
     });
     return { targetElementId: value.targetElementId.trim(), fileId: file.id };
   };
@@ -787,7 +948,7 @@ export const createDrawsyBridge = (
         json(response, 200, {
           ok: true,
           service: "drawsy-ai-bridge",
-          version: "0.1.0",
+          version: "0.1.0"
         });
         return;
       }
@@ -818,32 +979,28 @@ export const createDrawsyBridge = (
         );
         if (!session) return;
         const action = internalCanvas[2] as
-          | "read"
-          | "apply"
-          | "image"
-          | "context"
-          | "replace-image";
+          "read" | "apply" | "image" | "context" | "replace-image";
         const body = await readJson(request);
         const result =
           action === "image"
             ? await importCanvasImage(session, body)
             : action === "replace-image"
-            ? await replaceCanvasImage(session, body)
-            : action === "context"
-            ? resolveContextCaptures(session, [
-                parseCanvasContextReference(
-                  await requestCanvas(session, "capture", {
-                    contextRequest: parseCanvasContextRequest(body),
-                  })
-                ),
-              ])[0]
-            : await requestCanvas(
-                session,
-                action,
-                action === "apply"
-                  ? { operations: parseCanvasOperations(body) }
-                  : undefined
-              );
+              ? await replaceCanvasImage(session, body)
+              : action === "context"
+                ? resolveContextCaptures(session, [
+                    parseCanvasContextReference(
+                      await requestCanvas(session, "capture", {
+                        contextRequest: parseCanvasContextRequest(body)
+                      })
+                    )
+                  ])[0]
+                : await requestCanvas(
+                    session,
+                    action,
+                    action === "apply"
+                      ? { operations: parseCanvasOperations(body) }
+                      : undefined
+                  );
         json(response, 200, result);
         return;
       }
@@ -859,10 +1016,7 @@ export const createDrawsyBridge = (
         );
         if (!session) return;
         const action = internalConnector[2] as
-          | "list"
-          | "search"
-          | "read"
-          | "query";
+          "list" | "search" | "read" | "query";
         const body = await readJson(request);
         if (action === "list") {
           if (Object.keys(body).length) {
@@ -873,7 +1027,7 @@ export const createDrawsyBridge = (
             );
           }
           json(response, 200, {
-            sources: session.activeConnectorTurn?.sources || [],
+            sources: session.activeConnectorTurn?.sources || []
           });
           return;
         }
@@ -881,6 +1035,24 @@ export const createDrawsyBridge = (
           response,
           200,
           await executeConnectorRequest(session, action, body)
+        );
+        return;
+      }
+
+      const internalResource = url.pathname.match(
+        /^\/internal\/sessions\/([^/]+)\/resources\/execute$/
+      );
+      if (request.method === "POST" && internalResource) {
+        const session = internalSession(
+          request,
+          response,
+          decodeURIComponent(internalResource[1]!)
+        );
+        if (!session) return;
+        json(
+          response,
+          200,
+          await executeResourceRequest(session, await readJson(request))
         );
         return;
       }
@@ -901,11 +1073,11 @@ export const createDrawsyBridge = (
           captureId: decodeURIComponent(contextAssetMatch[2]!),
           role: contextAssetMatch[3] as "preview" | "source",
           assetId: decodeURIComponent(contextAssetMatch[4]!),
-          bytes: await readBytes(request),
+          bytes: await readBytes(request)
         });
         json(response, 201, {
           id: asset.id,
-          mimeType: asset.mimeType,
+          mimeType: asset.mimeType
         });
         return;
       }
@@ -915,12 +1087,12 @@ export const createDrawsyBridge = (
         const selection: FolderSelection = {
           id: randomUUID(),
           ...folder,
-          expiresAt: Date.now() + 60 * 60 * 1000,
+          expiresAt: Date.now() + 60 * 60 * 1000
         };
         selections.set(selection.id, selection);
         json(response, 200, {
           selectionId: selection.id,
-          name: selection.name,
+          name: selection.name
         });
         return;
       }
@@ -933,31 +1105,62 @@ export const createDrawsyBridge = (
         const canvasName =
           typeof body.canvasName === "string" ? body.canvasName : "Untitled";
         const surfaceKind = body.surfaceKind ?? "canvas";
+        const surfaceId =
+          typeof body.surfaceId === "string" && body.surfaceId.trim()
+            ? body.surfaceId.trim()
+            : null;
+        const surfaceName =
+          typeof body.surfaceName === "string" && body.surfaceName.trim()
+            ? body.surfaceName.trim().slice(0, 200)
+            : surfaceKind === "neutral"
+              ? "Drawsy"
+              : canvasName;
         const folder = selections.get(selectionId);
         if (!folder || folder.expiresAt <= Date.now()) {
           json(response, 400, {
             error: {
               code: "folder_expired",
-              message: "Choose the folder again.",
-            },
+              message: "Choose the folder again."
+            }
           });
           return;
         }
-        if (!canvasId) {
+        if (
+          (surfaceKind === "canvas" || surfaceKind === "presentation") &&
+          !canvasId
+        ) {
           json(response, 400, {
             error: {
               code: "canvas_required",
-              message: "A current canvas is required.",
-            },
+              message: "A current canvas is required."
+            }
           });
           return;
         }
-        if (surfaceKind !== "canvas" && surfaceKind !== "presentation") {
+        if (
+          surfaceKind !== "canvas" &&
+          surfaceKind !== "presentation" &&
+          surfaceKind !== "kanban" &&
+          surfaceKind !== "jira" &&
+          surfaceKind !== "neutral"
+        ) {
           json(response, 400, {
             error: {
               code: "surface_invalid",
-              message: "The Drawsy surface type is invalid.",
-            },
+              message: "The Drawsy surface type is invalid."
+            }
+          });
+          return;
+        }
+        if (
+          surfaceId &&
+          (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
+        ) {
+          json(response, 400, {
+            error: {
+              code: "surface_invalid",
+              message: "The Drawsy surface id is invalid."
+            }
           });
           return;
         }
@@ -968,7 +1171,14 @@ export const createDrawsyBridge = (
         let sessionRef: Session | null = null;
         const codex = await CodexAppServer.start(
           folder.path,
-          { id, secret: internalSecret, bridgeUrl, surfaceKind },
+          {
+            id,
+            secret: internalSecret,
+            bridgeUrl,
+            surfaceKind,
+            surfaceId,
+            surfaceName
+          },
           (event) => sessionRef && emit(sessionRef, event),
           (image) => {
             if (!sessionRef) return;
@@ -988,7 +1198,7 @@ export const createDrawsyBridge = (
               id: image.id,
               savedPath,
               result,
-              createdAt: Date.now(),
+              createdAt: Date.now()
             });
             if (sessionRef.generatedImages.length > 8) {
               sessionRef.generatedImages.shift();
@@ -999,17 +1209,20 @@ export const createDrawsyBridge = (
           id,
           token,
           internalSecret,
-          canvasId,
+          canvasId: canvasId || null,
           canvasName,
           surfaceKind,
+          surfaceId,
+          surfaceName,
           folder,
           clients: new Set(),
           canvasPending: new Map(),
           generatedImages: [],
           contextCaptures: new Map(),
           activeConnectorTurn: null,
+          activeResourceTurn: null,
           codex,
-          touchedAt: Date.now(),
+          touchedAt: Date.now()
         };
         sessionRef = session;
         sessions.set(id, session);
@@ -1030,7 +1243,7 @@ export const createDrawsyBridge = (
         response.writeHead(200, {
           "content-type": "application/x-ndjson; charset=utf-8",
           "cache-control": "no-store",
-          connection: "keep-alive",
+          connection: "keep-alive"
         });
         session.clients.add(response);
         response.write(
@@ -1038,8 +1251,8 @@ export const createDrawsyBridge = (
             type: "session.ready",
             data: {
               folderName: session.folder.name,
-              agent: session.codex.metadata,
-            },
+              agent: session.codex.metadata
+            }
           })}\n`
         );
         const heartbeat = setInterval(() => response.write("\n"), 15_000);
@@ -1065,28 +1278,32 @@ export const createDrawsyBridge = (
           json(response, 400, {
             error: {
               code: "invalid_message",
-              message: "Message is empty or too long.",
-            },
+              message: "Message is empty or too long."
+            }
           });
           return;
         }
         const connectorTurn = parseAgentConnectorTurn(body.connectors);
+        const resourceTurn = parseAgentResourceTurn(body.resources);
         session.activeConnectorTurn = connectorTurn;
+        session.activeResourceTurn = resourceTurn;
         try {
           await session.codex.startTurn(
             message,
             {
               skills: parsePromptTags(body.skills, "skills"),
-              plugins: parsePromptTags(body.plugins, "plugins"),
+              plugins: parsePromptTags(body.plugins, "plugins")
             },
             resolveContextCaptures(
               session,
               parseContextReferences(body.contexts)
             ),
-            connectorTurn?.sources || []
+            connectorTurn?.sources || [],
+            resourceTurn?.resources || []
           );
         } catch (error) {
           session.activeConnectorTurn = null;
+          session.activeResourceTurn = null;
           throw error;
         }
         json(response, 202, { accepted: true });
@@ -1122,14 +1339,14 @@ export const createDrawsyBridge = (
           "model",
           "effort",
           "accessMode",
-          "internetEnabled",
+          "internetEnabled"
         ]);
         if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
           json(response, 400, {
             error: {
               code: "invalid_settings",
-              message: "Unknown Codex setting.",
-            },
+              message: "Unknown Codex setting."
+            }
           });
           return;
         }
@@ -1145,8 +1362,8 @@ export const createDrawsyBridge = (
           json(response, 400, {
             error: {
               code: "invalid_settings",
-              message: "Invalid Codex setting value.",
-            },
+              message: "Invalid Codex setting value."
+            }
           });
           return;
         }
@@ -1176,8 +1393,8 @@ export const createDrawsyBridge = (
           json(response, 404, {
             error: {
               code: "request_not_found",
-              message: "Canvas request expired.",
-            },
+              message: "Canvas request expired."
+            }
           });
           return;
         }
@@ -1213,7 +1430,7 @@ export const createDrawsyBridge = (
       }
 
       json(response, 404, {
-        error: { code: "not_found", message: "Route not found." },
+        error: { code: "not_found", message: "Route not found." }
       });
     } catch (error) {
       const message =
@@ -1222,18 +1439,16 @@ export const createDrawsyBridge = (
         error instanceof BridgeRequestError
           ? error.status
           : message.includes("cancelled")
-          ? 409
-          : message.includes("MiB")
-          ? 413
-          : 500;
+            ? 409
+            : message.includes("MiB")
+              ? 413
+              : 500;
       json(response, status, {
         error: {
           code:
-            error instanceof BridgeRequestError
-              ? error.code
-              : "bridge_error",
-          message,
-        },
+            error instanceof BridgeRequestError ? error.code : "bridge_error",
+          message
+        }
       });
     }
   });
@@ -1265,6 +1480,6 @@ export const createDrawsyBridge = (
         for (const session of [...sessions.values()]) closeSession(session);
         server.close((error) => (error ? reject(error) : resolve()));
       }),
-    address: bridgeUrl,
+    address: bridgeUrl
   };
 };

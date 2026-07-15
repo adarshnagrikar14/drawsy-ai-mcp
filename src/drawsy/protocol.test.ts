@@ -5,7 +5,7 @@ import {
   readFile,
   realpath,
   rm,
-  writeFile,
+  writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,9 +15,10 @@ import test from "node:test";
 import { createDrawsyBridge } from "./bridge.js";
 import {
   parseAgentConnectorTurn,
+  parseAgentResourceTurn,
   parseCanvasContextReference,
   parseCanvasContextRequest,
-  parseCanvasOperations,
+  parseCanvasOperations
 } from "./protocol.js";
 
 test("connector turns require exact, unexpired, matching grants", () => {
@@ -30,16 +31,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
           connectionId: "google-one",
           capability: "mail",
           label: "gmail",
-          accountLabel: "person@example.com",
-        },
+          accountLabel: "person@example.com"
+        }
       ],
       grants: [
         {
           connectionId: "google-one",
           grant: "opaque.signed-grant",
-          expiresAt,
-        },
-      ],
+          expiresAt
+        }
+      ]
     }),
     {
       turnId: "turn-one",
@@ -48,16 +49,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
           connectionId: "google-one",
           capability: "mail",
           label: "gmail",
-          accountLabel: "person@example.com",
-        },
+          accountLabel: "person@example.com"
+        }
       ],
       grants: [
         {
           connectionId: "google-one",
           grant: "opaque.signed-grant",
-          expiresAt,
-        },
-      ],
+          expiresAt
+        }
+      ]
     }
   );
   assert.equal(parseAgentConnectorTurn(undefined), null);
@@ -70,16 +71,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
             connectionId: "google-one",
             capability: "mail",
             label: "gmail",
-            accountLabel: "person@example.com",
-          },
+            accountLabel: "person@example.com"
+          }
         ],
         grants: [
           {
             connectionId: "not-the-same-account",
             grant: "opaque.signed-grant",
-            expiresAt,
-          },
-        ],
+            expiresAt
+          }
+        ]
       }),
     /matching grant/
   );
@@ -92,18 +93,47 @@ test("connector turns require exact, unexpired, matching grants", () => {
             connectionId: "google-one",
             capability: "mail",
             label: "gmail",
-            accountLabel: "person@example.com",
-          },
+            accountLabel: "person@example.com"
+          }
         ],
         grants: [
           {
             connectionId: "google-one",
             grant: "opaque.signed-grant",
-            expiresAt: Date.now() - 1,
-          },
-        ],
+            expiresAt: Date.now() - 1
+          }
+        ]
       }),
     /expired/
+  );
+});
+
+test("Drawsy resource turns require exact, unexpired grants", () => {
+  const expiresAt = Date.now() + 60_000;
+  assert.deepEqual(
+    parseAgentResourceTurn({
+      turnId: "turn-one",
+      resources: ["kanban", "jira"],
+      grant: "opaque.signed-resource-grant",
+      expiresAt
+    }),
+    {
+      turnId: "turn-one",
+      resources: ["kanban", "jira"],
+      grant: "opaque.signed-resource-grant",
+      expiresAt
+    }
+  );
+  assert.equal(parseAgentResourceTurn(undefined), null);
+  assert.throws(
+    () =>
+      parseAgentResourceTurn({
+        turnId: "turn-one",
+        resources: ["kanban", "kanban"],
+        grant: "opaque.signed-resource-grant",
+        expiresAt
+      }),
+    /invalid or expired/
   );
 });
 
@@ -111,7 +141,7 @@ test("canvas operations reject malformed and ambiguous input", () => {
   assert.deepEqual(parseCanvasOperations({}), {
     upsertElements: [],
     deleteElementIds: [],
-    files: [],
+    files: []
   });
   assert.throws(() => parseCanvasOperations({ upsertElements: {} }), /array/);
   assert.throws(
@@ -126,9 +156,9 @@ test("canvas operations reject malformed and ambiguous input", () => {
             id: "image-1",
             mimeType: "image/png",
             dataURL: "data:image/jpeg;base64,AA==",
-            created: Date.now(),
-          },
-        ],
+            created: Date.now()
+          }
+        ]
       }),
     /invalid canvas image asset/
   );
@@ -140,26 +170,26 @@ test("canvas context stays bounded and uses one targeting mode", () => {
     {
       elementIds: ["image-1"],
       includeSourceImages: true,
-      maxDimension: 2048,
+      maxDimension: 2048
     }
   );
   assert.deepEqual(
     parseCanvasContextRequest({
       bounds: { x: -20, y: 30, width: 800, height: 600 },
       includeSourceImages: false,
-      maxDimension: 4096,
+      maxDimension: 4096
     }),
     {
       bounds: { x: -20, y: 30, width: 800, height: 600 },
       includeSourceImages: false,
-      maxDimension: 4096,
+      maxDimension: 4096
     }
   );
   assert.throws(
     () =>
       parseCanvasContextRequest({
         elementIds: ["image-1"],
-        bounds: { x: 0, y: 0, width: 10, height: 10 },
+        bounds: { x: 0, y: 0, width: 10, height: 10 }
       }),
     /either elementIds or bounds/
   );
@@ -172,7 +202,7 @@ test("canvas context stays bounded and uses one targeting mode", () => {
       parseCanvasContextReference({
         id: "not-a-session-capture",
         elementIds: [],
-        bounds: { x: 0, y: 0, width: 10, height: 10 },
+        bounds: { x: 0, y: 0, width: 10, height: 10 }
       }),
     /reference is invalid/
   );
@@ -233,7 +263,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
-    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_github_repository_contents: {}, list_github_issues: {}, list_github_pull_requests: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
     { name: "computer-use", tools: {}, authStatus: "unsupported" }
   ] } });
   if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
@@ -274,7 +304,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     NODE_ENV: process.env.NODE_ENV,
     DRAWSY_TEST_FOLDER: process.env.DRAWSY_TEST_FOLDER,
     DRAWSY_CODEX_BIN: process.env.DRAWSY_CODEX_BIN,
-    DRAWSY_TEST_REQUEST_LOG: process.env.DRAWSY_TEST_REQUEST_LOG,
+    DRAWSY_TEST_REQUEST_LOG: process.env.DRAWSY_TEST_REQUEST_LOG
   };
   process.env.NODE_ENV = "test";
   process.env.DRAWSY_TEST_FOLDER = selectedFolder;
@@ -287,7 +317,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const headers = { origin, "content-type": "application/json" };
     const picked = (await fetch(`${bridge.address}/v1/folders/pick`, {
       method: "POST",
-      headers,
+      headers
     }).then((response) => response.json())) as {
       selectionId: string;
       name: string;
@@ -301,14 +331,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         selectionId: picked.selectionId,
         canvasId: "canvas-1",
         canvasName: "Canvas 1",
-        surfaceKind: "presentation",
-      }),
+        surfaceKind: "presentation"
+      })
     }).then((response) => response.json())) as { id: string; token: string };
 
     const eventsResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/events`,
       {
-        headers: { origin, authorization: `Bearer ${session.token}` },
+        headers: { origin, authorization: `Bearer ${session.token}` }
       }
     );
     assert.equal(eventsResponse.status, 200);
@@ -320,7 +350,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       model: "gpt-test",
       modelProvider: "openai",
       reasoningEffort: "medium",
-      serviceTier: null,
+      serviceTier: null
     });
 
     const controlsResponse = await fetch(
@@ -343,15 +373,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         name: "documents",
         displayName: "Documents",
         description: "Create documents",
-        path: "/plugins/documents/skills/documents/SKILL.md",
-      },
+        path: "/plugins/documents/skills/documents/SKILL.md"
+      }
     ]);
     assert.deepEqual(
       controls.plugins.map((plugin) => plugin.id),
       ["documents@openai-primary-runtime"]
     );
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 16, authStatus: "unsupported" },
+      { name: "drawsy", toolCount: 19, authStatus: "unsupported" }
     ]);
 
     const settingsResponse = await fetch(
@@ -362,8 +392,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           model: "gpt-next",
           effort: "high",
-          internetEnabled: true,
-        }),
+          internetEnabled: true
+        })
       }
     );
     assert.equal(settingsResponse.status, 200);
@@ -372,7 +402,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const contextBytes = await readFile(generatedImage);
     for (const [role, assetId] of [
       ["preview", "selection"],
-      ["source", "source-1"],
+      ["source", "source-1"]
     ] as const) {
       const assetResponse = await fetch(
         `${bridge.address}/v1/sessions/${session.id}/context-assets/${contextId}/${role}/${assetId}`,
@@ -381,9 +411,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           headers: {
             origin,
             authorization: `Bearer ${session.token}`,
-            "content-type": "image/png",
+            "content-type": "image/png"
           },
-          body: contextBytes,
+          body: contextBytes
         }
       );
       assert.equal(assetResponse.status, 201);
@@ -399,16 +429,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           skills: [
             {
               name: "documents",
-              path: "/plugins/documents/skills/documents/SKILL.md",
-            },
+              path: "/plugins/documents/skills/documents/SKILL.md"
+            }
           ],
           plugins: [{ name: "Documents", path: "/plugins/documents" }],
           contexts: [
             {
               id: contextId,
               elementIds: ["image-1", "note-1"],
-              bounds: { x: 10, y: 20, width: 300, height: 240 },
-            },
+              bounds: { x: 10, y: 20, width: 300, height: 240 }
+            }
           ],
           connectors: {
             turnId: "connector-turn-one",
@@ -417,18 +447,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
                 connectionId: "google-one",
                 capability: "mail",
                 label: "gmail",
-                accountLabel: "person@example.com",
-              },
+                accountLabel: "person@example.com"
+              }
             ],
             grants: [
               {
                 connectionId: "google-one",
                 grant: "opaque.connector-grant",
-                expiresAt: Date.now() + 60_000,
-              },
-            ],
-          },
-        }),
+                expiresAt: Date.now() + 60_000
+              }
+            ]
+          }
+        })
       }
     );
     assert.equal(turnResponse.status, 202);
@@ -506,6 +536,19 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .replace_canvas_image_from_file.approval_mode,
       "approve"
     );
+    for (const tool of [
+      "create_kanban_card",
+      "update_kanban_card",
+      "move_kanban_card",
+      "create_kanban_checklist_item",
+      "update_kanban_checklist_item",
+      "link_current_canvas_to_kanban_card"
+    ]) {
+      assert.equal(
+        thread.params.config.mcp_servers.drawsy.tools[tool].approval_mode,
+        "approve"
+      );
+    }
     assert.equal(
       thread.params.config.mcp_servers.drawsy.env.DRAWSY_WORKSPACE_ROOT,
       canonicalFolder
@@ -514,7 +557,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(threads.length, 2);
     assert.equal(threads[1].params.config.web_search, "live");
     assert.equal(threads[1].params.model, "gpt-next");
-    assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [canonicalFolder]);
+    assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [
+      canonicalFolder
+    ]);
     const turn = log.find((message) => message.method === "turn/start");
     assert.equal(turn.params.permissions, undefined);
     assert.deepEqual(turn.params.sandboxPolicy, {
@@ -522,7 +567,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       writableRoots: [canonicalFolder],
       networkAccess: true,
       excludeTmpdirEnvVar: true,
-      excludeSlashTmp: true,
+      excludeSlashTmp: true
     });
     assert.deepEqual(turn.params.environments, []);
     assert.equal(turn.params.input[0].type, "skill");
@@ -552,8 +597,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         type: "text",
         text: "Inspect the folder.",
-        text_elements: [],
-      },
+        text_elements: []
+      }
     ]);
     const settings = log.find(
       (message) => message.method === "thread/settings/update"
@@ -572,14 +617,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           authorization: `Bearer ${internalSecret}`,
-          "content-type": "application/json",
+          "content-type": "application/json"
         },
         body: JSON.stringify({
           sourcePath: generatedImage,
           x: 40,
           y: 60,
-          maxWidth: 320,
-        }),
+          maxWidth: 320
+        })
       }
     );
     let canvasRequest: {
@@ -608,7 +653,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         x: canvasRequest.data.operations.upsertElements[0].x,
         y: canvasRequest.data.operations.upsertElements[0].y,
         width: canvasRequest.data.operations.upsertElements[0].width,
-        height: canvasRequest.data.operations.upsertElements[0].height,
+        height: canvasRequest.data.operations.upsertElements[0].height
       },
       { type: "image", x: 40, y: 60, width: 320, height: 320 }
     );
@@ -618,13 +663,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           ...headers,
-          authorization: `Bearer ${session.token}`,
+          authorization: `Bearer ${session.token}`
         },
         body: JSON.stringify({
           requestId: canvasRequest.data.requestId,
           ok: true,
-          data: { ok: true },
-        }),
+          data: { ok: true }
+        })
       }
     );
     assert.equal(canvasResponse.status, 200);
@@ -633,15 +678,41 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.deepEqual(await imageResponse.json(), {
       elementId: canvasRequest.data.operations.upsertElements[0].id,
       width: 320,
-      height: 320,
+      height: 320
     });
+
+    const neutralResponse = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: picked.selectionId,
+        surfaceKind: "neutral",
+        surfaceName: "Connectors"
+      })
+    });
+    assert.equal(neutralResponse.status, 201);
+    const neutralSession = (await neutralResponse.json()) as {
+      id: string;
+      token: string;
+    };
+    const closeNeutralResponse = await fetch(
+      `${bridge.address}/v1/sessions/${neutralSession.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          origin,
+          authorization: `Bearer ${neutralSession.token}`
+        }
+      }
+    );
+    assert.equal(closeNeutralResponse.status, 204);
 
     await reader.cancel();
     const closeResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}`,
       {
         method: "DELETE",
-        headers: { origin, authorization: `Bearer ${session.token}` },
+        headers: { origin, authorization: `Bearer ${session.token}` }
       }
     );
     assert.equal(closeResponse.status, 204);

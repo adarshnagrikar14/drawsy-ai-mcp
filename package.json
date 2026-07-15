@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.11.0",
-  "description": "Canvas-scoped Drawsy MCP and local Codex app-server bridge",
+  "description": "Surface-scoped Drawsy MCP and local Codex app-server bridge",
   "license": "MIT",
   "main": "dist/drawsy/mcp.js",
   "bin": {
