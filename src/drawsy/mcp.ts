@@ -175,7 +175,8 @@ const connectorCapabilitySchema = z.enum([
   "slack",
   "github",
   "read-ai",
-  "fireflies"
+  "fireflies",
+  "aws"
 ]);
 const remoteMcpCapabilitySchema = z.enum(["read-ai", "fireflies"]);
 const connectorConnectionIdSchema = z
@@ -575,6 +576,139 @@ server.registerTool(
               error instanceof Error
                 ? error.message
                 : "The meeting source could not be read."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_aws_regions",
+  {
+    description:
+      "List AWS regions enabled for the attached AWS account. Use this before broad infrastructure discovery when the user did not name a region.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("query", {
+              capability: "aws",
+              kind: "aws_regions",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "AWS regions could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "search_aws_resources",
+  {
+    description:
+      "Search live infrastructure inventory in one AWS region through the attached read-only AWS account. The query accepts names, ARNs, and AWS Resource Explorer filters such as service:ec2 or resourcetype:ec2:instance. Use the returned opaque ids with read_connected_item.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema,
+      region: z
+        .string()
+        .regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
+      query: z.string().trim().min(1).max(2_000),
+      cursor: connectorCursorSchema,
+      limit: z.number().int().min(1).max(100).default(50)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("search", {
+              capability: "aws",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "AWS resources could not be searched."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_aws_cloudformation_stacks",
+  {
+    description:
+      "List active CloudFormation stacks in one AWS region through the attached read-only account. Use read_connected_item on a stack result to retrieve its processed template, resource inventory, parameters, outputs, and status before drawing or explaining the architecture.",
+    inputSchema: z.object({
+      connectionId: connectorConnectionIdSchema,
+      region: z
+        .string()
+        .regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
+      cursor: connectorCursorSchema,
+      limit: z.number().int().min(1).max(100).default(50)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("query", {
+              capability: "aws",
+              kind: "aws_cloudformation_stacks",
+              ...input
+            })
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "CloudFormation stacks could not be listed."
           }
         ]
       };

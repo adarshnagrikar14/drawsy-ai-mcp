@@ -73,6 +73,22 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
                             started: "Reading meeting source",
                             completed: "Meeting source ready"
                           }
+                        : item.tool === "list_aws_regions"
+                          ? {
+                              started: "Checking AWS regions",
+                              completed: "AWS regions ready"
+                            }
+                          : item.tool === "search_aws_resources"
+                            ? {
+                                started: "Searching AWS infrastructure",
+                                completed: "AWS resources ready"
+                              }
+                            : item.tool ===
+                                "list_aws_cloudformation_stacks"
+                              ? {
+                                  started: "Checking CloudFormation",
+                                  completed: "CloudFormation stacks ready"
+                                }
                     : item.tool === "list_mail_messages"
                       ? { started: "Checking mail", completed: "Mail ready" }
                       : item.tool === "list_calendars"

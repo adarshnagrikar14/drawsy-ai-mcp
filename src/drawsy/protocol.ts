@@ -139,7 +139,8 @@ export type ConnectorCapability =
   | "slack"
   | "github"
   | "read-ai"
-  | "fireflies";
+  | "fireflies"
+  | "aws";
 
 export type AgentConnectorSource = {
   connectionId: string;
@@ -211,7 +212,8 @@ const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "slack",
   "github",
   "read-ai",
-  "fireflies"
+  "fireflies",
+  "aws"
 ]);
 
 export const isConnectorCapability = (

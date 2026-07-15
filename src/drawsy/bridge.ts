@@ -448,7 +448,14 @@ export const createDrawsyBridge = (
   ) => {
     const allowedKeys =
       action === "search"
-        ? new Set(["capability", "connectionId", "query", "cursor", "limit"])
+        ? new Set([
+            "capability",
+            "connectionId",
+            "query",
+            "region",
+            "cursor",
+            "limit"
+          ])
         : action === "read"
           ? new Set(["capability", "connectionId", "resourceId"])
           : action === "mcp-tools"
@@ -491,6 +498,7 @@ export const createDrawsyBridge = (
               "since",
               "sort",
               "direction",
+              "region",
               "head",
               "base",
               "cursor",
@@ -509,7 +517,13 @@ export const createDrawsyBridge = (
       body.connectionId
     );
     let operation:
-      | { operation: "search"; query: string; cursor?: string; limit?: number }
+      | {
+          operation: "search";
+          query: string;
+          region?: string;
+          cursor?: string;
+          limit?: number;
+        }
       | { operation: "read"; resourceId: string }
       | { operation: "mcp_tools" }
       | {
@@ -540,6 +554,7 @@ export const createDrawsyBridge = (
       operation = {
         operation: "search",
         query,
+        ...(typeof body.region === "string" ? { region: body.region } : {}),
         ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}),
         ...(typeof body.limit === "number" ? { limit: body.limit } : {})
       };
