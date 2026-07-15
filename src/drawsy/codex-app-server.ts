@@ -387,7 +387,8 @@ const toolFailure = (item: JsonObject) => {
 };
 
 const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
-- You may use normal local coding tools only inside the selected folder.
+- The selected folder is the project workspace. Built-in filesystem, patch, and shell tools are available there; use them naturally when the user asks to inspect, create, or update project files.
+- Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions.
 - Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
 - External apps are unavailable. Connected sources exist only when the user attaches source tags to a turn; access them through Drawsy's read-only connected-source tools and never assume an unlisted source is available. Network access for ordinary tools is controlled by the current Drawsy session setting.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
@@ -637,7 +638,6 @@ export class CodexAppServer {
       runtimeWorkspaceRoots: [this.folderPath],
       approvalPolicy: "never",
       ephemeral: true,
-      environments: [],
       developerInstructions: getDeveloperInstructions(this.session.surfaceKind),
       personality: "pragmatic",
       config: {
@@ -753,7 +753,6 @@ export class CodexAppServer {
         sandboxPolicy: this.sandboxPolicy(),
         runtimeWorkspaceRoots: [this.folderPath],
         approvalPolicy: "never",
-        environments: [],
         input: [
           ...tags.skills.map((skill) => ({ type: "skill", ...skill })),
           ...tags.plugins.map((plugin) => ({ type: "mention", ...plugin })),

@@ -498,6 +498,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(thread.params.permissions, ":workspace");
     assert.deepEqual(thread.params.runtimeWorkspaceRoots, [canonicalFolder]);
     assert.equal(thread.params.approvalPolicy, "never");
+    assert.equal(thread.params.environments, undefined);
+    assert.match(
+      thread.params.developerInstructions,
+      /Built-in filesystem, patch, and shell tools are available/
+    );
+    assert.match(thread.params.developerInstructions, /DRAW\.md/);
     assert.match(
       thread.params.developerInstructions,
       /This surface is a presentation/
@@ -569,7 +575,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       excludeTmpdirEnvVar: true,
       excludeSlashTmp: true
     });
-    assert.deepEqual(turn.params.environments, []);
+    assert.equal(turn.params.environments, undefined);
     assert.equal(turn.params.input[0].type, "skill");
     assert.equal(turn.params.input[1].type, "mention");
     assert.match(turn.params.input[2].text, /Canvas context 1/);

@@ -6,6 +6,7 @@ Local, surface-scoped MCP and Codex app-server bridge for Drawsy.
 
 - Binds only to `127.0.0.1`.
 - Uses Codex's `:workspace` permission profile with the selected folder as the only runtime workspace root.
+- Keeps Codex's local execution environment enabled, so its built-in filesystem, patch, and shell tools can work naturally in that folder. Repository-native files such as `DRAW.md` require no separate filesystem MCP.
 - Uses `approvalPolicy: "never"`: work inside the boundary proceeds without prompts; escape attempts are denied.
 - Disables command network access, web search, apps, plugins, browser/computer tools, and inherited MCP servers.
 - Injects a surface-aware Drawsy MCP into every Codex thread. Canvas and presentation chats receive only their current visual surface; a tagged Kanban turn can resolve the exact open board; tagged Jira remains read-only; neutral pages receive no product context unless the user explicitly adds a resource tag.
