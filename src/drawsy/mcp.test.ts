@@ -35,6 +35,12 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
               capability: "mail",
               label: "gmail",
               accountLabel: "person@example.com"
+            },
+            {
+              connectionId: "fireflies-one",
+              capability: "fireflies",
+              label: "fireflies",
+              accountLabel: "person@example.com"
             }
           ]
         })
@@ -44,14 +50,36 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     if (
       request.url?.endsWith("/connectors/search") ||
       request.url?.endsWith("/connectors/read") ||
-      request.url?.endsWith("/connectors/query")
+      request.url?.endsWith("/connectors/query") ||
+      request.url?.endsWith("/connectors/mcp-tools") ||
+      request.url?.endsWith("/connectors/mcp-call")
     ) {
       let body = "";
       for await (const chunk of request) body += chunk.toString();
       connectorRequests.push({ url: request.url, body: JSON.parse(body) });
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
-        request.url.endsWith("/query")
+        request.url.endsWith("/mcp-tools")
+          ? JSON.stringify({
+              operation: "mcp_tools",
+              capability: "fireflies",
+              tools: [
+                {
+                  name: "fireflies_get_transcripts",
+                  description: "Get meeting transcripts",
+                  inputSchema: { type: "object" }
+                }
+              ]
+            })
+          : request.url.endsWith("/mcp-call")
+            ? JSON.stringify({
+                operation: "mcp_call",
+                capability: "fireflies",
+                toolName: "fireflies_get_transcripts",
+                content: [{ type: "text", text: "Planning meeting" }],
+                structuredContent: null
+              })
+          : request.url.endsWith("/query")
           ? JSON.stringify({
               operation: "list",
               capability: "mail",
@@ -159,12 +187,14 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "add_image_from_file",
       "apply_canvas_changes",
+      "call_connected_meeting_tool",
       "capture_canvas_context",
       "create_kanban_card",
       "create_kanban_checklist_item",
       "link_current_canvas_to_kanban_card",
       "list_calendar_events",
       "list_calendars",
+      "list_connected_meeting_tools",
       "list_connected_sources",
       "list_drive_files",
       "list_github_issues",
@@ -319,6 +349,27 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       }
     });
     assert.match(JSON.stringify(connectedItem.content), /Status is green/);
+    const meetingTools = await client.callTool({
+      name: "list_connected_meeting_tools",
+      arguments: {
+        capability: "fireflies",
+        connectionId: "fireflies-one"
+      }
+    });
+    assert.match(
+      JSON.stringify(meetingTools.content),
+      /fireflies_get_transcripts/
+    );
+    const meeting = await client.callTool({
+      name: "call_connected_meeting_tool",
+      arguments: {
+        capability: "fireflies",
+        connectionId: "fireflies-one",
+        toolName: "fireflies_get_transcripts",
+        arguments: { limit: 1 }
+      }
+    });
+    assert.match(JSON.stringify(meeting.content), /Planning meeting/);
     assert.deepEqual(connectorRequests, [
       {
         url: "/internal/sessions/session-1/connectors/query",
@@ -345,6 +396,22 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
           capability: "mail",
           connectionId: "google-one",
           resourceId: "opaque-message"
+        }
+      },
+      {
+        url: "/internal/sessions/session-1/connectors/mcp-tools",
+        body: {
+          capability: "fireflies",
+          connectionId: "fireflies-one"
+        }
+      },
+      {
+        url: "/internal/sessions/session-1/connectors/mcp-call",
+        body: {
+          capability: "fireflies",
+          connectionId: "fireflies-one",
+          toolName: "fireflies_get_transcripts",
+          arguments: { limit: 1 }
         }
       }
     ]);

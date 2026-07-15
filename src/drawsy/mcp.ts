@@ -75,7 +75,13 @@ const callBridge = async (
 };
 
 const callConnectorBridge = async (
-  action: "list" | "search" | "read" | "query",
+  action:
+    | "list"
+    | "search"
+    | "read"
+    | "query"
+    | "mcp-tools"
+    | "mcp-call",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -167,8 +173,11 @@ const connectorCapabilitySchema = z.enum([
   "drive",
   "notion",
   "slack",
-  "github"
+  "github",
+  "read-ai",
+  "fireflies"
 ]);
+const remoteMcpCapabilitySchema = z.enum(["read-ai", "fireflies"]);
 const connectorConnectionIdSchema = z
   .string()
   .trim()
@@ -215,6 +224,10 @@ const githubPageCursorSchema = z
   .trim()
   .regex(/^\d{1,6}$/)
   .optional();
+const remoteMcpArgumentsSchema = z.record(
+  z.string().trim().min(1).max(128),
+  z.unknown()
+);
 
 const server = new McpServer({
   name: "Drawsy",
@@ -484,6 +497,84 @@ server.registerTool(
               error instanceof Error
                 ? error.message
                 : "Connected sources could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "list_connected_meeting_tools",
+  {
+    description:
+      "List the live read-only tools exposed by an attached Read AI or Fireflies MCP connection. Use this after @read or @fireflies is attached, then choose the provider tool whose schema matches the user's request.",
+    inputSchema: z.object({
+      capability: remoteMcpCapabilitySchema,
+      connectionId: connectorConnectionIdSchema
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("mcp-tools", input)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "Meeting tools could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "call_connected_meeting_tool",
+  {
+    description:
+      "Call one read-only tool discovered through list_connected_meeting_tools on the attached Read AI or Fireflies account. Pass arguments exactly as the discovered input schema describes; Drawsy blocks mutation tools.",
+    inputSchema: z.object({
+      capability: remoteMcpCapabilitySchema,
+      connectionId: connectorConnectionIdSchema,
+      toolName: z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
+      arguments: remoteMcpArgumentsSchema.default({})
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callConnectorBridge("mcp-call", input)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "The meeting source could not be read."
           }
         ]
       };

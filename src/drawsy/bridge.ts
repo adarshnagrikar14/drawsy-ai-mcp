@@ -443,7 +443,7 @@ export const createDrawsyBridge = (
 
   const executeConnectorRequest = async (
     session: Session,
-    action: "search" | "read" | "query",
+    action: "search" | "read" | "query" | "mcp-tools" | "mcp-call",
     body: Record<string, unknown>
   ) => {
     const allowedKeys =
@@ -451,6 +451,15 @@ export const createDrawsyBridge = (
         ? new Set(["capability", "connectionId", "query", "cursor", "limit"])
         : action === "read"
           ? new Set(["capability", "connectionId", "resourceId"])
+          : action === "mcp-tools"
+            ? new Set(["capability", "connectionId"])
+            : action === "mcp-call"
+              ? new Set([
+                  "capability",
+                  "connectionId",
+                  "toolName",
+                  "arguments"
+                ])
           : new Set([
               "capability",
               "connectionId",
@@ -502,6 +511,12 @@ export const createDrawsyBridge = (
     let operation:
       | { operation: "search"; query: string; cursor?: string; limit?: number }
       | { operation: "read"; resourceId: string }
+      | { operation: "mcp_tools" }
+      | {
+          operation: "mcp_call";
+          toolName: string;
+          arguments: Record<string, unknown>;
+        }
       | ({ operation: "list" } & Record<string, unknown>);
     if (action === "search") {
       const query = typeof body.query === "string" ? body.query.trim() : "";
@@ -539,6 +554,24 @@ export const createDrawsyBridge = (
         );
       }
       operation = { operation: "read", resourceId };
+    } else if (action === "mcp-tools") {
+      operation = { operation: "mcp_tools" };
+    } else if (action === "mcp-call") {
+      const toolName =
+        typeof body.toolName === "string" ? body.toolName.trim() : "";
+      const args = body.arguments;
+      if (
+        !/^[A-Za-z0-9_.:-]{1,128}$/.test(toolName) ||
+        !isRecord(args) ||
+        Buffer.byteLength(JSON.stringify(args), "utf8") > 64 * 1024
+      ) {
+        throw new BridgeRequestError(
+          400,
+          "connector_request_invalid",
+          "The remote MCP tool request is invalid."
+        );
+      }
+      operation = { operation: "mcp_call", toolName, arguments: args };
     } else {
       const {
         capability: _capability,
@@ -1006,7 +1039,7 @@ export const createDrawsyBridge = (
       }
 
       const internalConnector = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/connectors\/(list|search|read|query)$/
+        /^\/internal\/sessions\/([^/]+)\/connectors\/(list|search|read|query|mcp-tools|mcp-call)$/
       );
       if (request.method === "POST" && internalConnector) {
         const session = internalSession(
@@ -1016,7 +1049,12 @@ export const createDrawsyBridge = (
         );
         if (!session) return;
         const action = internalConnector[2] as
-          "list" | "search" | "read" | "query";
+          | "list"
+          | "search"
+          | "read"
+          | "query"
+          | "mcp-tools"
+          | "mcp-call";
         const body = await readJson(request);
         if (action === "list") {
           if (Object.keys(body).length) {

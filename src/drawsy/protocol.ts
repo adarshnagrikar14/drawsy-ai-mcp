@@ -132,7 +132,14 @@ export type AgentPromptTag = {
 };
 
 export type ConnectorCapability =
-  "mail" | "calendar" | "drive" | "notion" | "slack" | "github";
+  | "mail"
+  | "calendar"
+  | "drive"
+  | "notion"
+  | "slack"
+  | "github"
+  | "read-ai"
+  | "fireflies";
 
 export type AgentConnectorSource = {
   connectionId: string;
@@ -202,7 +209,9 @@ const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "drive",
   "notion",
   "slack",
-  "github"
+  "github",
+  "read-ai",
+  "fireflies"
 ]);
 
 export const isConnectorCapability = (

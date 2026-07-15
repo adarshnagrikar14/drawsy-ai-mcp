@@ -63,6 +63,16 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
                         started: "Searching connected source",
                         completed: "Source searched"
                       }
+                    : item.tool === "list_connected_meeting_tools"
+                      ? {
+                          started: "Checking meeting tools",
+                          completed: "Meeting tools ready"
+                        }
+                      : item.tool === "call_connected_meeting_tool"
+                        ? {
+                            started: "Reading meeting source",
+                            completed: "Meeting source ready"
+                          }
                     : item.tool === "list_mail_messages"
                       ? { started: "Checking mail", completed: "Mail ready" }
                       : item.tool === "list_calendars"
