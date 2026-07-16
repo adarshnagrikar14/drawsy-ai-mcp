@@ -153,6 +153,11 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       );
       return;
     }
+    if (request.url?.endsWith("/preview")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ previewId: "preview-1" }));
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
   });
@@ -187,6 +192,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "add_image_from_file",
       "apply_canvas_changes",
+      "attach_live_preview",
       "call_connected_meeting_tool",
       "capture_canvas_context",
       "create_kanban_card",
@@ -261,6 +267,21 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       deleteElementIds: ["old"],
       files: []
     });
+
+    appliedBody = "";
+    const preview = await client.callTool({
+      name: "attach_live_preview",
+      arguments: {
+        url: "http://localhost:5173/",
+        title: "Local app"
+      }
+    });
+    assert.equal(preview.isError, undefined);
+    assert.deepEqual(JSON.parse(appliedBody), {
+      url: "http://localhost:5173/",
+      title: "Local app"
+    });
+    assert.match(JSON.stringify(preview.content), /preview-1/);
 
     appliedBody = "";
     const image = await client.callTool({

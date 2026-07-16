@@ -434,6 +434,8 @@ const getDeveloperInstructions = (surfaceKind: DrawsySurfaceKind) =>
 - When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
 - For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
 - For an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
+- When the user asks to build or preview a local web app, start its development server inside the selected folder and call attach_live_preview with the loopback URL. Do not create a saved iframe element for a live local service.
+- Local development servers may bind to loopback without internet access. If declared dependencies are missing and installation needs the internet, explain that once and wait for the user to enable internet instead of retrying package managers or bypassing the sandbox.
 - Never attempt to discover or access another canvas.${
           surfaceKind === "presentation"
             ? `
@@ -640,6 +642,7 @@ export class CodexAppServer {
             apply_canvas_changes: { approval_mode: "approve" },
             add_image_from_file: { approval_mode: "approve" },
             replace_canvas_image_from_file: { approval_mode: "approve" },
+            attach_live_preview: { approval_mode: "approve" },
             create_kanban_card: { approval_mode: "approve" },
             update_kanban_card: { approval_mode: "approve" },
             move_kanban_card: { approval_mode: "approve" },
@@ -673,6 +676,20 @@ export class CodexAppServer {
       personality: "pragmatic",
       config: {
         ...this.threadBaseConfig,
+        features: {
+          network_proxy: options.internetEnabled
+            ? false
+            : {
+                enabled: true,
+                mode: "full",
+                domains: {
+                  localhost: "allow",
+                  "127.0.0.1": "allow",
+                  "::1": "allow"
+                },
+                allow_local_binding: true
+              }
+        },
         web_search: options.internetEnabled ? "live" : "disabled",
         ...(options.effort ? { model_reasoning_effort: options.effort } : {})
       }
@@ -1105,7 +1122,7 @@ export class CodexAppServer {
         threadId: this.threadId,
         cwd: this.folderPath,
         approvalPolicy: "never",
-        sandboxPolicy: this.sandboxPolicy(nextAccessMode, nextInternet),
+        sandboxPolicy: this.sandboxPolicy(nextAccessMode),
         ...(selectedModel ? { model: selectedModel.model } : {}),
         ...(settings.effort ? { effort: settings.effort } : {})
       });
@@ -1129,16 +1146,13 @@ export class CodexAppServer {
     return { agent: this.metadata, controls: await this.getControls() };
   }
 
-  private sandboxPolicy(
-    accessMode = this.accessMode,
-    internetEnabled = this.internetEnabled
-  ): JsonObject {
+  private sandboxPolicy(accessMode = this.accessMode): JsonObject {
     return accessMode === "readOnly"
-      ? { type: "readOnly", networkAccess: internetEnabled }
+      ? { type: "readOnly", networkAccess: true }
       : {
           type: "workspaceWrite",
           writableRoots: [this.folderPath],
-          networkAccess: internetEnabled,
+          networkAccess: true,
           excludeTmpdirEnvVar: true,
           excludeSlashTmp: true
         };

@@ -36,6 +36,7 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasImageRequest,
+  parseLivePreviewRequest,
   parseCanvasOperations,
   parseAgentConnectorTurn,
   parseAgentResourceTurn,
@@ -49,6 +50,7 @@ import {
   type CanvasContextRequest,
   type CanvasImageReplacement,
   type CanvasOperations,
+  type LivePreviewRequest,
   type DrawsySurfaceKind
 } from "./protocol.js";
 
@@ -906,11 +908,12 @@ export const createDrawsyBridge = (
 
   const requestCanvas = (
     session: Session,
-    action: "read" | "apply" | "capture" | "replaceImage",
+    action: "read" | "apply" | "capture" | "replaceImage" | "preview",
     options: {
       operations?: CanvasOperations;
       contextRequest?: CanvasContextRequest;
       imageReplacement?: CanvasImageReplacement;
+      previewRequest?: LivePreviewRequest;
     } = {}
   ) => {
     if (
@@ -1070,7 +1073,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|image|context|replace-image)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|image|context|replace-image|preview)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -1080,13 +1083,22 @@ export const createDrawsyBridge = (
         );
         if (!session) return;
         const action = internalCanvas[2] as
-          "read" | "apply" | "image" | "context" | "replace-image";
+          | "read"
+          | "apply"
+          | "image"
+          | "context"
+          | "replace-image"
+          | "preview";
         const body = await readJson(request);
         const result =
           action === "image"
             ? await importCanvasImage(session, body)
             : action === "replace-image"
               ? await replaceCanvasImage(session, body)
+              : action === "preview"
+                ? await requestCanvas(session, "preview", {
+                    previewRequest: parseLivePreviewRequest(body)
+                  })
               : action === "context"
                 ? resolveContextCaptures(session, [
                     parseCanvasContextReference(

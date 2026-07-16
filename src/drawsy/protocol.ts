@@ -70,6 +70,16 @@ export type CanvasImageReplacement = {
   naturalHeight: number;
 };
 
+export type LivePreviewRequest = {
+  previewId?: string;
+  url: string;
+  title?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+};
+
 export type AgentMetadata = {
   model: string;
   modelProvider: string;
@@ -192,11 +202,12 @@ export type BridgeEvent =
       type: "canvas.request";
       data: {
         requestId: string;
-        action: "read" | "apply" | "capture" | "replaceImage";
+        action: "read" | "apply" | "capture" | "replaceImage" | "preview";
         canvasId: string;
         operations?: CanvasOperations;
         contextRequest?: CanvasContextRequest;
         imageReplacement?: CanvasImageReplacement;
+        previewRequest?: LivePreviewRequest;
       };
     }
   | { type: "error"; data: { message: string; code: string } };
@@ -422,6 +433,76 @@ const finiteWithin = (candidate: unknown, min: number, max: number) =>
   Number.isFinite(candidate) &&
   candidate >= min &&
   candidate <= max;
+
+export const parseLivePreviewRequest = (
+  value: unknown
+): LivePreviewRequest => {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some(
+      (key) =>
+        !["previewId", "url", "title", "x", "y", "width", "height"].includes(
+          key
+        )
+    ) ||
+    typeof value.url !== "string" ||
+    !value.url.trim() ||
+    value.url.length > 2_048
+  ) {
+    throw new Error("Live preview request is invalid.");
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value.url.trim());
+  } catch {
+    throw new Error("Live preview URL is invalid.");
+  }
+  if (url.hostname === "0.0.0.0") url.hostname = "127.0.0.1";
+  if (url.hostname === "[::]") url.hostname = "[::1]";
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+    url.username ||
+    url.password
+  ) {
+    throw new Error("Live previews must use a local loopback URL.");
+  }
+  url.hash = "";
+
+  const optionalString = (candidate: unknown, maxLength: number) =>
+    candidate === undefined ||
+    (typeof candidate === "string" &&
+      !!candidate.trim() &&
+      candidate.length <= maxLength &&
+      !/[\u0000-\u001f\u007f]/.test(candidate));
+  if (
+    !optionalString(value.previewId, 128) ||
+    !optionalString(value.title, 120) ||
+    (value.x !== undefined &&
+      !finiteWithin(value.x, -1_000_000, 1_000_000)) ||
+    (value.y !== undefined &&
+      !finiteWithin(value.y, -1_000_000, 1_000_000)) ||
+    (value.width !== undefined && !finiteWithin(value.width, 360, 4_000)) ||
+    (value.height !== undefined && !finiteWithin(value.height, 260, 4_000))
+  ) {
+    throw new Error("Live preview placement is invalid.");
+  }
+
+  return {
+    url: url.toString(),
+    ...(value.previewId === undefined
+      ? {}
+      : { previewId: (value.previewId as string).trim() }),
+    ...(value.title === undefined
+      ? {}
+      : { title: (value.title as string).trim() }),
+    ...(value.x === undefined ? {} : { x: value.x as number }),
+    ...(value.y === undefined ? {} : { y: value.y as number }),
+    ...(value.width === undefined ? {} : { width: value.width as number }),
+    ...(value.height === undefined ? {} : { height: value.height as number })
+  };
+};
 
 const parseContextBounds = (value: unknown): CanvasContextBounds => {
   if (

@@ -18,7 +18,8 @@ import {
   parseAgentResourceTurn,
   parseCanvasContextReference,
   parseCanvasContextRequest,
-  parseCanvasOperations
+  parseCanvasOperations,
+  parseLivePreviewRequest
 } from "./protocol.js";
 
 test("connector turns require exact, unexpired, matching grants", () => {
@@ -217,7 +218,36 @@ const freePort = () =>
       const port = typeof address === "object" && address ? address.port : 0;
       server.close((error) => (error ? reject(error) : resolve(port)));
     });
-  });
+});
+
+test("live previews stay on loopback and use bounded geometry", () => {
+  assert.deepEqual(
+    parseLivePreviewRequest({
+      url: "http://0.0.0.0:5173/app#state",
+      title: "Local app",
+      width: 960,
+      height: 640
+    }),
+    {
+      url: "http://127.0.0.1:5173/app",
+      title: "Local app",
+      width: 960,
+      height: 640
+    }
+  );
+  assert.throws(
+    () => parseLivePreviewRequest({ url: "https://example.com" }),
+    /loopback/
+  );
+  assert.throws(
+    () =>
+      parseLivePreviewRequest({
+        url: "http://localhost:5173",
+        width: 100
+      }),
+    /placement/
+  );
+});
 
 test("bridge keeps Codex controls inside the selected-folder boundary", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
@@ -568,6 +598,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .replace_canvas_image_from_file.approval_mode,
       "approve"
     );
+    assert.equal(
+      thread.params.config.mcp_servers.drawsy.tools.attach_live_preview
+        .approval_mode,
+      "approve"
+    );
     for (const tool of [
       "create_kanban_card",
       "update_kanban_card",
@@ -587,7 +622,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     const threads = log.filter((message) => message.method === "thread/start");
     assert.equal(threads.length, 2);
+    assert.deepEqual(threads[0].params.config.features.network_proxy, {
+      enabled: true,
+      mode: "full",
+      domains: {
+        localhost: "allow",
+        "127.0.0.1": "allow",
+        "::1": "allow"
+      },
+      allow_local_binding: true
+    });
     assert.equal(threads[1].params.config.web_search, "live");
+    assert.equal(threads[1].params.config.features.network_proxy, false);
     assert.equal(threads[1].params.model, "gpt-next");
     assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [
       canonicalFolder
@@ -711,6 +757,69 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       elementId: canvasRequest.data.operations.upsertElements[0].id,
       width: 320,
       height: 320
+    });
+
+    const previewRequest = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/preview`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${internalSecret}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          url: "http://0.0.0.0:5173/app#local",
+          title: "Local app"
+        })
+      }
+    );
+    let previewEvent: {
+      data: {
+        requestId: string;
+        action: string;
+        previewRequest: Record<string, unknown>;
+      };
+    } | null = null;
+    while (!previewEvent) {
+      const event = await reader.read();
+      assert.equal(event.done, false);
+      const lines = new TextDecoder()
+        .decode(event.value)
+        .split("\n")
+        .filter(Boolean);
+      const match = lines
+        .map((line) => JSON.parse(line))
+        .find(
+          (value) =>
+            value.type === "canvas.request" &&
+            value.data?.action === "preview"
+        );
+      if (match) previewEvent = match;
+    }
+    assert.deepEqual(previewEvent.data.previewRequest, {
+      url: "http://127.0.0.1:5173/app",
+      title: "Local app"
+    });
+    const previewCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          authorization: `Bearer ${session.token}`
+        },
+        body: JSON.stringify({
+          requestId: previewEvent.data.requestId,
+          ok: true,
+          data: { previewId: "preview-1" }
+        })
+      }
+    );
+    assert.equal(previewCanvasResponse.status, 200);
+    const previewResponse = await previewRequest;
+    assert.equal(previewResponse.status, 200);
+    assert.deepEqual(await previewResponse.json(), {
+      previewId: "preview-1"
     });
 
     const neutralResponse = await fetch(`${bridge.address}/v1/sessions`, {

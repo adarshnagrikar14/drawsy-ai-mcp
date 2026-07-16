@@ -38,7 +38,13 @@ if (
 }
 
 const callBridge = async (
-  action: "read" | "apply" | "image" | "context" | "replace-image",
+  action:
+    | "read"
+    | "apply"
+    | "image"
+    | "context"
+    | "replace-image"
+    | "preview",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -307,6 +313,65 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
                 error instanceof Error
                   ? error.message
                   : "Invalid canvas change."
+            }
+          ]
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "attach_live_preview",
+    {
+      description:
+        "Attach a running local web app to the current canvas as a local-only live preview. Start the development server first, then pass its loopback URL. The preview supports the app's own hot reload and is never added to the saved or collaborative canvas scene.",
+      inputSchema: z.object({
+        url: z
+          .string()
+          .trim()
+          .min(1)
+          .max(2_048)
+          .describe(
+            "Local development URL using localhost, 127.0.0.1, ::1, or a 0.0.0.0 bind address."
+          ),
+        title: z.string().trim().min(1).max(120).optional(),
+        previewId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(128)
+          .optional()
+          .describe("Reuse an existing preview id to update it in place."),
+        x: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+        y: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+        width: z.number().finite().min(360).max(4_000).optional(),
+        height: z.number().finite().min(260).max(4_000).optional()
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async (input) => {
+      try {
+        const result = JSON.parse(await callBridge("preview", input)) as {
+          previewId: string;
+        };
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Local live preview attached as ${result.previewId}.`
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "The local live preview could not be attached."
             }
           ]
         };
