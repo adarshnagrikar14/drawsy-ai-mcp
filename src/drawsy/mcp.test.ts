@@ -231,6 +231,17 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       ),
       false
     );
+    const genericSearch = tools.tools.find(
+      (tool) => tool.name === "search_connected_source"
+    );
+    assert.deepEqual(
+      (
+        genericSearch?.inputSchema.properties?.capability as {
+          enum?: unknown;
+        }
+      )?.enum,
+      ["mail", "calendar", "drive", "notion", "slack", "github"]
+    );
 
     const read = await client.callTool({
       name: "read_current_canvas",
@@ -343,6 +354,24 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       }
     });
     assert.match(JSON.stringify(search.content), /opaque-message/);
+    const awsSearch = await client.callTool({
+      name: "search_aws_resources",
+      arguments: {
+        connectionId: "aws-one",
+        region: "ap-south-1",
+        query: ""
+      }
+    });
+    assert.equal(awsSearch.isError, undefined);
+    const invalidGenericAwsSearch = await client.callTool({
+      name: "search_connected_source",
+      arguments: {
+        capability: "aws",
+        connectionId: "aws-one",
+        query: "service:ec2"
+      }
+    });
+    assert.equal(invalidGenericAwsSearch.isError, true);
     const connectedItem = await client.callTool({
       name: "read_connected_item",
       arguments: {
@@ -391,6 +420,16 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
           connectionId: "google-one",
           query: "project update",
           limit: 10
+        }
+      },
+      {
+        url: "/internal/sessions/session-1/connectors/search",
+        body: {
+          capability: "aws",
+          connectionId: "aws-one",
+          region: "ap-south-1",
+          query: "",
+          limit: 50
         }
       },
       {

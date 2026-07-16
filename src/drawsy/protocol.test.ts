@@ -282,6 +282,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "inProgress" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "failed", error: null, result: { content: [{ type: "text", text: "GitHub App cannot access that repository." }], structuredContent: null, _meta: null } } } });
+    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "failed", error: null, result: {} } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "inProgress", result: "" } } });
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
       generatedImage
@@ -475,6 +477,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(turnEvents, /"tool":"read_current_canvas"/);
     assert.match(turnEvents, /"tool":"list_github_repositories"/);
     assert.match(turnEvents, /GitHub App cannot access that repository\./);
+    assert.match(turnEvents, /Checking AWS regions failed\./);
+    assert.doesNotMatch(turnEvents, /Tool failed without details/);
     assert.match(turnEvents, /"tool":"commandExecution"/);
     assert.match(turnEvents, /"tool":"reasoning"/);
     assert.match(turnEvents, /"tool":"plan"/);

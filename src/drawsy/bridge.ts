@@ -534,16 +534,19 @@ export const createDrawsyBridge = (
       | ({ operation: "list" } & Record<string, unknown>);
     if (action === "search") {
       const query = typeof body.query === "string" ? body.query.trim() : "";
+      const awsSearch = source.capability === "aws";
+      const maxQueryLength = awsSearch ? 1_280 : 2_000;
+      const maxResults = awsSearch ? 100 : 20;
       if (
-        !query ||
-        query.length > 2_000 ||
+        (!awsSearch && !query) ||
+        query.length > maxQueryLength ||
         (body.cursor !== undefined &&
           (typeof body.cursor !== "string" || body.cursor.length > 4_096)) ||
         (body.limit !== undefined &&
           (typeof body.limit !== "number" ||
             !Number.isInteger(body.limit) ||
             body.limit < 1 ||
-            body.limit > 20))
+            body.limit > maxResults))
       ) {
         throw new BridgeRequestError(
           400,
