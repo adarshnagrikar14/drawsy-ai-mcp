@@ -2,7 +2,9 @@
 
 import { createDrawsyBridge } from "./bridge.js";
 
-const bridge = createDrawsyBridge();
+const bridge = createDrawsyBridge({
+  host: process.env.HOST || "127.0.0.1"
+});
 await bridge.listen();
 console.log(`Drawsy AI bridge listening on ${bridge.address}`);
 
