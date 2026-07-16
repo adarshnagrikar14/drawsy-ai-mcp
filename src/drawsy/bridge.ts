@@ -13,6 +13,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile
@@ -56,6 +57,55 @@ type FolderSelection = {
   path: string;
   name: string;
   expiresAt: number;
+};
+
+const MAX_DRAW_DOCUMENT_BYTES = 512 * 1024;
+
+const readDrawDocument = async (folder: FolderSelection) => {
+  const candidate = path.join(folder.path, "DRAW.md");
+  let resolved: string;
+  try {
+    resolved = await realpath(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { exists: false as const };
+    }
+    throw error;
+  }
+
+  const relative = path.relative(folder.path, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new BridgeRequestError(
+      400,
+      "draw_document_outside_folder",
+      "DRAW.md must be inside the selected folder."
+    );
+  }
+
+  const file = await stat(resolved);
+  if (!file.isFile()) {
+    throw new BridgeRequestError(
+      400,
+      "draw_document_invalid",
+      "DRAW.md must be a regular file."
+    );
+  }
+  if (file.size > MAX_DRAW_DOCUMENT_BYTES) {
+    throw new BridgeRequestError(
+      413,
+      "draw_document_too_large",
+      "DRAW.md must be 512 KiB or smaller."
+    );
+  }
+
+  const content = await readFile(resolved, "utf8");
+  return {
+    exists: true as const,
+    name: "DRAW.md",
+    content,
+    hash: createHash("sha256").update(content).digest("hex"),
+    sourceId: createHash("sha256").update(folder.path).digest("hex").slice(0, 24)
+  };
 };
 
 type CanvasPending = {
@@ -1150,6 +1200,26 @@ export const createDrawsyBridge = (
           selectionId: selection.id,
           name: selection.name
         });
+        return;
+      }
+
+      const drawDocumentMatch = url.pathname.match(
+        /^\/v1\/folders\/([^/]+)\/draw-document$/
+      );
+      if (request.method === "GET" && drawDocumentMatch) {
+        const selectionId = decodeURIComponent(drawDocumentMatch[1]!);
+        const folder = selections.get(selectionId);
+        if (!folder || folder.expiresAt <= Date.now()) {
+          selections.delete(selectionId);
+          json(response, 400, {
+            error: {
+              code: "folder_expired",
+              message: "Choose the folder again."
+            }
+          });
+          return;
+        }
+        json(response, 200, await readDrawDocument(folder));
         return;
       }
 

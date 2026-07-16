@@ -227,6 +227,10 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   const generatedImage = path.join(root, "generated-raccoon.png");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedFolder));
   await writeFile(
+    path.join(selectedFolder, "DRAW.md"),
+    "# System map\n\n```mermaid\nflowchart LR\n  Web --> API\n```\n"
+  );
+  await writeFile(
     generatedImage,
     Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -325,6 +329,24 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       name: string;
     };
     assert.equal(picked.name, "workspace");
+
+    const drawDocumentResponse = await fetch(
+      `${bridge.address}/v1/folders/${picked.selectionId}/draw-document`,
+      { headers }
+    );
+    assert.equal(drawDocumentResponse.status, 200);
+    const drawDocument = (await drawDocumentResponse.json()) as {
+      exists: boolean;
+      name: string;
+      content: string;
+      hash: string;
+      sourceId: string;
+    };
+    assert.equal(drawDocument.exists, true);
+    assert.equal(drawDocument.name, "DRAW.md");
+    assert.match(drawDocument.content, /flowchart LR/);
+    assert.match(drawDocument.hash, /^[a-f0-9]{64}$/);
+    assert.match(drawDocument.sourceId, /^[a-f0-9]{24}$/);
 
     const session = (await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
