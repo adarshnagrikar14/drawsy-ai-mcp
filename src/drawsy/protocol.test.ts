@@ -413,6 +413,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.equal(controlsResponse.status, 200);
     const controls = (await controlsResponse.json()) as {
+      accessMode: string;
+      internetEnabled: boolean;
       models: Array<{ model: string }>;
       skills: Array<{ name: string }>;
       plugins: Array<{ id: string }>;
@@ -422,6 +424,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       controls.models.map((model) => model.model),
       ["gpt-test", "gpt-next"]
     );
+    assert.equal(controls.accessMode, "workspace");
+    assert.equal(controls.internetEnabled, true);
     assert.deepEqual(controls.skills, [
       {
         name: "documents",
@@ -446,7 +450,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           model: "gpt-next",
           effort: "high",
-          internetEnabled: true
+          internetEnabled: false
         })
       }
     );
@@ -582,7 +586,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.config.plugins["computer-use@openai-bundled"].enabled,
       false
     );
-    assert.equal(thread.params.config.web_search, "disabled");
+    assert.equal(thread.params.config.web_search, "live");
     assert.equal(
       thread.params.config.mcp_servers.drawsy.tools.apply_canvas_changes
         .approval_mode,
@@ -622,7 +626,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     const threads = log.filter((message) => message.method === "thread/start");
     assert.equal(threads.length, 2);
-    assert.deepEqual(threads[0].params.config.features.network_proxy, {
+    assert.equal(threads[0].params.config.features.network_proxy, false);
+    assert.equal(threads[1].params.config.web_search, "disabled");
+    assert.deepEqual(threads[1].params.config.features.network_proxy, {
       enabled: true,
       mode: "full",
       domains: {
@@ -632,8 +638,6 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       },
       allow_local_binding: true
     });
-    assert.equal(threads[1].params.config.web_search, "live");
-    assert.equal(threads[1].params.config.features.network_proxy, false);
     assert.equal(threads[1].params.model, "gpt-next");
     assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [
       canonicalFolder

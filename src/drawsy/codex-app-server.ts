@@ -472,7 +472,7 @@ export class CodexAppServer {
   private turnActive = false;
   private agentMetadata: AgentMetadata | null = null;
   private accessMode: AgentAccessMode = "workspace";
-  private internetEnabled = false;
+  private internetEnabled = true;
   private lastControls: AgentControls | null = null;
   private threadBaseConfig: JsonObject | null = null;
   private resolveDrawsyMcp!: () => void;
@@ -653,7 +653,7 @@ export class CodexAppServer {
         }
       }
     };
-    await this.startAgentThread({ internetEnabled: false, waitForMcp: true });
+    await this.startAgentThread({ internetEnabled: true, waitForMcp: true });
   }
 
   private async startAgentThread(options: {
