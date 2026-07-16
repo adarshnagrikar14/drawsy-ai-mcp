@@ -52,11 +52,12 @@ const pickerCommand = (): [string, string[]] => {
 };
 
 export const pickFolder = async () => {
-  const testFolder =
-    process.env.NODE_ENV === "test"
+  const defaultFolder =
+    process.env.DRAWSY_WORKSPACE_FOLDER ||
+    (process.env.NODE_ENV === "test"
       ? process.env.DRAWSY_TEST_FOLDER
-      : undefined;
-  const rawPath = testFolder ?? (await runPicker(...pickerCommand()));
+      : undefined);
+  const rawPath = defaultFolder ?? (await runPicker(...pickerCommand()));
   const folderPath = await realpath(rawPath);
   if (!(await stat(folderPath)).isDirectory()) {
     throw new Error("The selected path is not a folder.");

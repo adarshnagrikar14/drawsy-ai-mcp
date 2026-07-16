@@ -53,6 +53,12 @@ import {
   type LivePreviewRequest,
   type DrawsySurfaceKind
 } from "./protocol.js";
+import {
+  createRemoteSessionWorkspace,
+  readRemoteRuntimeConfig,
+  RemotePreviewProxy,
+  removeRemoteSessionWorkspace
+} from "./remote-runtime.js";
 
 type FolderSelection = {
   id: string;
@@ -151,6 +157,7 @@ type Session = {
   activeConnectorTurn: AgentConnectorTurn | null;
   activeResourceTurn: AgentResourceTurn | null;
   codex: CodexAppServer;
+  remoteWorkspacePath: string | null;
   touchedAt: number;
 };
 
@@ -306,7 +313,8 @@ export const createDrawsyBridge = (
         .map((origin) => origin.trim())
         .filter(Boolean)
   );
-  const bridgeUrl = `http://${host}:${port}`;
+  const connectHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+  const bridgeUrl = `http://${connectHost}:${port}`;
   const connectorBackendUrl = new URL(
     process.env.DRAWSY_CONNECTOR_BACKEND_URL || "http://127.0.0.1:3004"
   );
@@ -327,8 +335,13 @@ export const createDrawsyBridge = (
   }
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
+  const remoteRuntime = readRemoteRuntimeConfig();
+  const previewProxy = remoteRuntime
+    ? new RemotePreviewProxy(remoteRuntime)
+    : null;
 
   const emit = (session: Session, event: BridgeEvent) => {
+    session.touchedAt = Date.now();
     if (
       event.type === "error" ||
       (event.type === "turn.status" && event.data.status !== "inProgress")
@@ -369,6 +382,7 @@ export const createDrawsyBridge = (
 
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
+    previewProxy?.removeSession(session.id);
     session.codex.close();
     for (const pending of session.canvasPending.values()) {
       clearTimeout(pending.timer);
@@ -378,6 +392,14 @@ export const createDrawsyBridge = (
       client.end();
     }
     void rm(sessionContextPath(session), { recursive: true, force: true });
+    if (session.remoteWorkspacePath) {
+      const workspacePath = session.remoteWorkspacePath;
+      const removal = setTimeout(
+        () => void removeRemoteSessionWorkspace(workspacePath),
+        2_000
+      );
+      removal.unref();
+    }
   };
 
   const requirePublicOrigin = (
@@ -1046,6 +1068,7 @@ export const createDrawsyBridge = (
 
   const server = createServer(async (request, response) => {
     try {
+      if (previewProxy?.handleHttp(request, response)) return;
       const url = new URL(request.url || "/", bridgeUrl);
 
       if (request.method === "GET" && url.pathname === "/health") {
@@ -1097,7 +1120,15 @@ export const createDrawsyBridge = (
               ? await replaceCanvasImage(session, body)
               : action === "preview"
                 ? await requestCanvas(session, "preview", {
-                    previewRequest: parseLivePreviewRequest(body)
+                    previewRequest: previewProxy
+                      ? previewProxy.attach(
+                          session.id,
+                          parseLivePreviewRequest(body),
+                          () => {
+                            session.touchedAt = Date.now();
+                          }
+                        )
+                      : parseLivePreviewRequest(body)
                   })
               : action === "context"
                 ? resolveContextCaptures(session, [
@@ -1305,44 +1336,59 @@ export const createDrawsyBridge = (
         const id = randomUUID();
         const token = randomBytes(32).toString("base64url");
         const internalSecret = randomBytes(32).toString("base64url");
-        await prepareContextStore(folder.path);
+        const remoteWorkspacePath = remoteRuntime
+          ? await createRemoteSessionWorkspace(remoteRuntime, id, folder.path)
+          : null;
+        const sessionFolder: FolderSelection = remoteWorkspacePath
+          ? { ...folder, path: remoteWorkspacePath }
+          : folder;
+        await prepareContextStore(sessionFolder.path);
         let sessionRef: Session | null = null;
-        const codex = await CodexAppServer.start(
-          folder.path,
-          {
-            id,
-            secret: internalSecret,
-            bridgeUrl,
-            surfaceKind,
-            surfaceId,
-            surfaceName
-          },
-          (event) => sessionRef && emit(sessionRef, event),
-          (image) => {
-            if (!sessionRef) return;
-            const savedPath =
-              image.savedPath && path.isAbsolute(image.savedPath)
-                ? path.resolve(image.savedPath)
-                : undefined;
-            const maxDataUrlLength =
-              Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
-            const result =
-              image.result?.startsWith("data:image/") &&
-              image.result.length <= maxDataUrlLength
-                ? image.result
-                : undefined;
-            if (!savedPath && !result) return;
-            sessionRef.generatedImages.push({
-              id: image.id,
-              savedPath,
-              result,
-              createdAt: Date.now()
-            });
-            if (sessionRef.generatedImages.length > 8) {
-              sessionRef.generatedImages.shift();
+        let codex: CodexAppServer;
+        try {
+          codex = await CodexAppServer.start(
+            sessionFolder.path,
+            {
+              id,
+              secret: internalSecret,
+              bridgeUrl,
+              surfaceKind,
+              surfaceId,
+              surfaceName,
+              isolateProcessGroup: Boolean(remoteRuntime)
+            },
+            (event) => sessionRef && emit(sessionRef, event),
+            (image) => {
+              if (!sessionRef) return;
+              const savedPath =
+                image.savedPath && path.isAbsolute(image.savedPath)
+                  ? path.resolve(image.savedPath)
+                  : undefined;
+              const maxDataUrlLength =
+                Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
+              const result =
+                image.result?.startsWith("data:image/") &&
+                image.result.length <= maxDataUrlLength
+                  ? image.result
+                  : undefined;
+              if (!savedPath && !result) return;
+              sessionRef.generatedImages.push({
+                id: image.id,
+                savedPath,
+                result,
+                createdAt: Date.now()
+              });
+              if (sessionRef.generatedImages.length > 8) {
+                sessionRef.generatedImages.shift();
+              }
             }
+          );
+        } catch (error) {
+          if (remoteWorkspacePath) {
+            await removeRemoteSessionWorkspace(remoteWorkspacePath);
           }
-        );
+          throw error;
+        }
         const session: Session = {
           id,
           token,
@@ -1352,7 +1398,7 @@ export const createDrawsyBridge = (
           surfaceKind,
           surfaceId,
           surfaceName,
-          folder,
+          folder: sessionFolder,
           clients: new Set(),
           canvasPending: new Map(),
           generatedImages: [],
@@ -1360,11 +1406,12 @@ export const createDrawsyBridge = (
           activeConnectorTurn: null,
           activeResourceTurn: null,
           codex,
+          remoteWorkspacePath,
           touchedAt: Date.now()
         };
         sessionRef = session;
         sessions.set(id, session);
-        json(response, 201, { id, token, folderName: folder.name });
+        json(response, 201, { id, token, folderName: sessionFolder.name });
         return;
       }
 
@@ -1591,13 +1638,18 @@ export const createDrawsyBridge = (
     }
   });
 
+  server.on("upgrade", (request, socket, head) => {
+    if (!previewProxy?.handleUpgrade(request, socket, head)) socket.destroy();
+  });
+
   const cleanup = setInterval(() => {
     const now = Date.now();
     for (const [id, selection] of selections) {
       if (selection.expiresAt <= now) selections.delete(id);
     }
     for (const session of sessions.values()) {
-      if (now - session.touchedAt > 30 * 60 * 1000) closeSession(session);
+      const idleMs = remoteRuntime?.idleMs ?? 30 * 60 * 1000;
+      if (now - session.touchedAt > idleMs) closeSession(session);
     }
   }, 60_000);
   cleanup.unref();

@@ -491,6 +491,7 @@ export class CodexAppServer {
       surfaceKind: DrawsySurfaceKind;
       surfaceId: string | null;
       surfaceName: string;
+      isolateProcessGroup: boolean;
     },
     private readonly emit: (event: BridgeEvent) => void,
     private readonly registerGeneratedImage: (image: {
@@ -534,7 +535,10 @@ export class CodexAppServer {
         "--disable",
         "network_proxy"
       ],
-      { stdio: ["pipe", "pipe", "pipe"] }
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: session.isolateProcessGroup && process.platform !== "win32"
+      }
     );
     readline
       .createInterface({ input: this.process.stdout })
@@ -567,6 +571,7 @@ export class CodexAppServer {
       surfaceKind: DrawsySurfaceKind;
       surfaceId: string | null;
       surfaceName: string;
+      isolateProcessGroup: boolean;
     },
     emit: (event: BridgeEvent) => void,
     registerGeneratedImage: (image: {
@@ -1159,7 +1164,27 @@ export class CodexAppServer {
   }
 
   close() {
-    this.process.kill("SIGTERM");
+    const pid = this.process.pid;
+    const processGroup =
+      this.session.isolateProcessGroup && process.platform !== "win32" && pid
+        ? -pid
+        : null;
+    try {
+      if (processGroup) process.kill(processGroup, "SIGTERM");
+      else this.process.kill("SIGTERM");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+    if (processGroup) {
+      const forceKill = setTimeout(() => {
+        try {
+          process.kill(processGroup, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }, 1_500);
+      forceKill.unref();
+    }
   }
 
   private handleLine(line: string) {
