@@ -1,24 +1,57 @@
 # Drawsy AI MCP
 
-Local, surface-scoped MCP and Codex app-server bridge for Drawsy.
+Surface-scoped Drawsy MCP and Codex app-server bridge. It gives a Codex workspace the current Drawsy surface, explicit connected sources, selected-folder tools, multimodal canvas operations, and isolated live previews—without turning unrelated product data into ambient context.
 
-## Current scope
+> **Repository status:** private for now. It is shared directly with OpenAI Build Week judges and may be published after a dedicated security and release review. No license is granted by repository access alone.
 
-- Binds only to `127.0.0.1`.
-- Uses Codex's `:workspace` permission profile with the selected folder as the only runtime workspace root.
-- Keeps Codex's local execution environment enabled, so its built-in filesystem, patch, and shell tools can work naturally in that folder. Repository-native files such as `DRAW.md` require no separate filesystem MCP.
-- Uses `approvalPolicy: "never"`: work inside the boundary proceeds without prompts; escape attempts are denied.
-- Disables command network access, web search, apps, plugins, browser/computer tools, and inherited MCP servers.
-- Injects a surface-aware Drawsy MCP into every Codex thread. Canvas and presentation chats receive only their current visual surface; a tagged Kanban turn can resolve the exact open board; tagged Jira remains read-only; neutral pages receive no product context unless the user explicitly adds a resource tag.
-- Exposes only sources tagged in the current message. Each tagged turn receives exact, short-lived, read-only grants; provider credentials never enter Codex or the local MCP process.
-- Treats `@kanban` and `@jira` as first-party Drawsy resources rather than external connector accounts. Their separate turn grant reaches only the Drawsy backend: Jira remains read-only, while Kanban mutations reuse its role-aware, revisioned, audited command service.
-- Gives attached sources provider-native read tools for mail filters, calendar ranges, recent Drive and Notion content, Slack channels/history, and deep item reads. GitHub additionally supports selected-repository discovery, directory browsing, exact text-file reads, issues, and pull requests; it never clones or writes to repositories. `@aws` exposes enabled regions, live Resource Explorer inventory, and CloudFormation stack templates/resources through temporary cross-account sessions. `@read` and `@fireflies` discover and call the providers' official remote MCP tools through the same turn grant, with mutation tools filtered out by the backend.
-- On canvas surfaces, exposes targeted reads, upserts, deletes, real raster-image insertion/replacement, and selection or region context capture. Existing elements are not deleted by omission, and canvas tools are absent from non-canvas sessions.
-- Local images stay restricted to the selected folder. Image-generator outputs cross through a short-lived, session-only capability recorded from Codex itself; all images are MIME-sniffed, size-limited, content-hashed, and transferred with their Excalidraw file record instead of rendering as placeholders.
-- Canvas context combines a rendered PNG (including visible annotations) with pristine selected raster sources. Context files live under the selected folder's ignored `.drawsy/context` directory and are removed when the session closes.
-- Uses the user's existing local Codex authentication. Drawsy has no login flow and never reads or stores credentials.
+## Product role
 
-## Run locally
+```mermaid
+flowchart LR
+  Client["Drawsy web client"] <--> Bridge["Agent bridge"]
+  Bridge <--> Codex["Codex app server"]
+  Bridge <--> MCP["Surface-scoped Drawsy MCP"]
+  MCP <--> Surface["Current canvas or presentation"]
+  Bridge --> Folder["Selected workspace folder"]
+  Bridge --> Grants["Tagged source/resource grants"]
+  Codex --> Preview["Isolated preview process"]
+  Preview --> Client
+```
+
+One session receives one selected folder and one Drawsy surface kind. Canvas tools exist only for a current canvas or presentation. Kanban, Jira, connectors, and neutral pages do not receive invented canvas context.
+
+## OpenAI Build Week 2026
+
+This repository was created entirely after the submission window opened on July 13, 2026 at 9:00 AM PT.
+
+- **First commit:** [`09ff187`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commit/09ff187e8e0d4003f7ac0592ba60516cb89af1c6)
+- **History:** [all commits on `main`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commits/main)
+- **Initial qualifying implementation:** 35 commits and 51 files at the first documentation pass.
+
+Build Week work includes the bridge protocol, Codex app-server lifecycle, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
+
+Codex running GPT-5.6 accelerated architecture review, implementation, official API research, sandbox validation, failure diagnosis, and test/deploy loops. The product owner defined the essential boundaries: the Drawsy MCP is always present, only the current surface is visible, the selected folder is the only workspace root, connected sources are attached explicitly, and previews remain session-local rather than collaboration-synced.
+
+The main product record and complete repository set are documented in [`excal-ai`](https://github.com/adarshnagrikar14/excal-ai) under its **#Build Week Special** section.
+
+## Current guarantees
+
+- **Selected-folder boundary.** Codex uses the selected folder as its single runtime workspace root. Workspace mode permits reads, edits, patches, and commands inside it; read-only mode removes writes.
+- **No approval deadlock.** The bridge uses `approvalPolicy: "never"`; permitted actions proceed and boundary escapes are rejected instead of opening an unusable approval flow.
+- **Internet is explicit and visible.** It is enabled by default in the current UI and can be disabled per session. Browser, Chrome-control, and computer-use plugins remain blocked inside Drawsy.
+- **Surface scope.** Canvas and presentation sessions receive only their current visual surface. Kanban and Jira receive their current resource only through a valid resource grant. Neutral pages start with no Drawsy resource context.
+- **Turn-scoped sources.** Only sources tagged in the current message are exposed. The bridge receives signed, short-lived grants—not OAuth tokens or provider refresh credentials.
+- **Provider-native reads.** Mail, Calendar, Drive, Notion, Slack, GitHub, Read AI, Fireflies, and AWS use capability-specific tools. GitHub supports selected repositories, directories, text files, issues, and pull requests without cloning or writing.
+- **Controlled first-party mutations.** Jira is read-only. Kanban writes still pass through its membership, role, locking, revision, idempotency, and audit path.
+- **Editable canvas operations.** Targeted reads, upserts, deletes, raster insertion/replacement, and selection/region capture preserve normal Excalidraw elements. Existing elements are not deleted by omission.
+- **Multimodal context.** A capture combines the rendered annotated region with pristine selected raster sources. Temporary files live below the selected folder's ignored `.drawsy/context` directory and are removed with the session.
+- **Real image transport.** Generated files are MIME-sniffed, size-limited, content-hashed, and transferred with their Excalidraw file records instead of becoming placeholders.
+
+## Local and hosted modes
+
+### Local companion
+
+The bridge can bind to loopback and use the local folder directly:
 
 ```bash
 corepack pnpm install --frozen-lockfile
@@ -26,20 +59,48 @@ corepack pnpm run build:drawsy
 corepack pnpm run start:drawsy
 ```
 
-The bridge listens at `http://127.0.0.1:3031`. Drawsy's development app is already configured to use it.
+The default local endpoint is `http://127.0.0.1:3031`.
+
+### Hosted runtime
+
+In hosted mode, each session receives a temporary server-side workspace copied from the selected project upload. Visual surfaces may also receive one exclusive preview port from a configured pool. Drawsy's own ports (`3001`, `3002`, `3003`, `3004`, `3020`, and `3031`) are rejected from that pool.
+
+The preview proxy exposes a tokenized HTTPS origin only after the loopback service responds. Closing a session releases the port, stops its Codex process group, removes context, and deletes the temporary workspace. Idle hosted sessions expire after 20 minutes by default; the timeout is configurable from 1 minute to 24 hours.
+
+Non-visual surfaces do not reserve preview capacity.
+
+## Configuration
+
+Copy `.env.example` values into the service environment; never commit production overrides.
+
+- `PORT` — bridge port, normally `3031`.
+- `DRAWSY_ALLOWED_ORIGINS` — exact trusted browser origins.
+- `DRAWSY_CONNECTOR_BACKEND_URL` — loopback HTTP for development or HTTPS in production.
+- `DRAWSY_CANVAS_REQUEST_TIMEOUT_MS` — bounded wait for browser canvas responses.
+- `DRAWSY_REMOTE_WORKSPACES_ROOT` — absolute hosted workspace root; enables remote mode with the preview origin.
+- `DRAWSY_PREVIEW_ORIGIN_TEMPLATE` — HTTPS origin containing exactly one `{token}` placeholder.
+- `DRAWSY_PREVIEW_PORT_RANGE` — at least five non-reserved ports; default `18000-18099`.
+- `DRAWSY_REMOTE_SESSION_IDLE_MS` — hosted idle timeout; default 20 minutes.
+
+The Docker image includes Node.js 22, Bubblewrap, the compiled bridge, and the Codex CLI. Persistent Codex configuration is loaded separately from ephemeral session workspaces.
 
 ## Verify
 
 ```bash
 corepack pnpm run test:drawsy
+corepack pnpm run build:drawsy
 ```
 
-The focused tests cover the stdio MCP surface, loopback authentication, turn-scoped connector and first-party resource grants, inherited-tool suppression, folder permission profile, raster validation, image transfer, context materialization, path-escape rejection, and bridge session lifecycle. They use a fake Codex process and do not open a browser or contact the internet.
+Focused tests cover the stdio MCP surface, authentication, source/resource grants, inherited-tool suppression, folder permissions, raster validation, image transfer, context materialization, path-escape rejection, surface routing, remote workspaces, preview allocation, and session lifecycle. They use a fake Codex process and do not open a browser or contact providers.
 
-## Configuration
+## Security boundaries
 
-Copy `.env.example` values into the service environment when overriding defaults. `DRAWSY_CONNECTOR_BACKEND_URL` may be a loopback HTTP URL for local development or an HTTPS URL in production. Production packaging should start this bridge as a per-user local companion process; it must not be exposed on a LAN or public interface.
+- Do not expose an unprotected local bridge on a LAN or the public internet.
+- Hosted deployments must terminate HTTPS, validate exact origins, authenticate every session, and keep workspace/preview roots isolated.
+- Never store provider or Firebase credentials in this service; provider execution belongs to the Drawsy backend.
+- Treat connected-source results as untrusted data, never as agent instructions.
+- Do not weaken path, MIME, origin, port, or output-size validation to make a demo succeed.
 
-## Upstream
+## Upstream foundation
 
-Forked from [excalidraw/excalidraw-mcp](https://github.com/excalidraw/excalidraw-mcp). Its Git history is retained and the source repository is configured as `upstream`.
+Drawsy AI MCP began from [Excalidraw MCP](https://github.com/excalidraw/excalidraw-mcp). The Drawsy bridge, Codex lifecycle, security boundaries, connector/resource grants, remote runtime, and product protocol were built during the submission window. Upstream authorship is not claimed as Drawsy work.
