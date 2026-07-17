@@ -1,6 +1,6 @@
 export const MAX_BODY_BYTES = 12 * 1024 * 1024;
 export const MAX_CANVAS_ASSET_BYTES = 8 * 1024 * 1024;
-export const CANVAS_REQUEST_TIMEOUT_MS = 30_000;
+export const CANVAS_REQUEST_TIMEOUT_MS = 60_000;
 
 export type JsonObject = Record<string, unknown>;
 

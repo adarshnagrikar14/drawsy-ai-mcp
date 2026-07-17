@@ -314,6 +314,18 @@ export const createDrawsyBridge = (
         .map((origin) => origin.trim())
         .filter(Boolean)
   );
+  const configuredCanvasRequestTimeout = Number(
+    process.env.DRAWSY_CANVAS_REQUEST_TIMEOUT_MS || CANVAS_REQUEST_TIMEOUT_MS
+  );
+  if (
+    !Number.isInteger(configuredCanvasRequestTimeout) ||
+    configuredCanvasRequestTimeout < 5_000 ||
+    configuredCanvasRequestTimeout > 120_000
+  ) {
+    throw new Error(
+      "DRAWSY_CANVAS_REQUEST_TIMEOUT_MS must be between 5000 and 120000."
+    );
+  }
   const connectHost = host === "0.0.0.0" ? "127.0.0.1" : host;
   const bridgeUrl = `http://${connectHost}:${port}`;
   const connectorBackendUrl = new URL(
@@ -971,7 +983,7 @@ export const createDrawsyBridge = (
       const timer = setTimeout(() => {
         session.canvasPending.delete(requestId);
         reject(new Error("Canvas response timed out."));
-      }, CANVAS_REQUEST_TIMEOUT_MS);
+      }, configuredCanvasRequestTimeout);
       session.canvasPending.set(requestId, { resolve, reject, timer });
     });
   };
