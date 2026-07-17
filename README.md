@@ -23,11 +23,8 @@ One session receives one selected folder and one Drawsy surface kind. Canvas too
 
 ## OpenAI Build Week 2026
 
-This repository was created entirely after the submission window opened on July 13, 2026 at 9:00 AM PT.
-
-- **First commit:** [`09ff187`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commit/09ff187e8e0d4003f7ac0592ba60516cb89af1c6)
-- **History:** [all commits on `main`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commits/main)
-- **Initial qualifying implementation:** 35 commits and 51 files at the first documentation pass.
+- **Submission window opened:** July 13, 2026 at 9:00 AM PT.
+- **First qualifying commit:** [`09ff187`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commit/09ff187e8e0d4003f7ac0592ba60516cb89af1c6)
 
 Build Week work includes the bridge protocol, Codex and OpenCode runtime lifecycles, model-provider selection, session-only provider keys with live tool-capable model discovery, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
 
