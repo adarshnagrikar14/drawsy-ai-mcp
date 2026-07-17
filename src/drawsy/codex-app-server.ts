@@ -372,7 +372,7 @@ const toolFailure = (item: JsonObject, activity: ActiveTool) => {
   return `${activity.startedMessage} failed.`;
 };
 
-const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
+const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 - The selected folder is the project workspace. Built-in filesystem, patch, and shell tools are available there; use them naturally when the user asks to inspect, create, or update project files.
 - Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions.
 - Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
@@ -380,7 +380,7 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
-const getDeveloperInstructions = (
+export const getDeveloperInstructions = (
   surfaceKind: DrawsySurfaceKind,
   previewPort: number | null
 ) =>
@@ -1057,7 +1057,8 @@ export class CodexAppServer {
       models,
       skills,
       plugins,
-      mcpServers
+      mcpServers,
+      apiKeyProviders: []
     };
     this.lastControls = controls;
     return controls;

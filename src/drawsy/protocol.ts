@@ -92,14 +92,23 @@ export type AgentMetadata = {
 
 export type AgentAccessMode = "workspace" | "readOnly";
 
+export type AgentEngine = "codex" | "opencode";
+
 export type AgentModelOption = {
   id: string;
   model: string;
+  providerId?: string;
   displayName: string;
   description: string;
   efforts: Array<{ id: string; description: string }>;
   defaultEffort: string;
   isDefault: boolean;
+};
+
+export type AgentApiKeyProviderOption = {
+  id: string;
+  name: string;
+  label: string;
 };
 
 export type AgentSkillOption = {
@@ -130,6 +139,7 @@ export type AgentControls = {
   skills: AgentSkillOption[];
   plugins: AgentPluginOption[];
   mcpServers: AgentMcpOption[];
+  apiKeyProviders: AgentApiKeyProviderOption[];
 };
 
 export type AgentSettingsPatch = {
@@ -137,6 +147,7 @@ export type AgentSettingsPatch = {
   effort?: string;
   accessMode?: AgentAccessMode;
   internetEnabled?: boolean;
+  modelProvider?: string;
 };
 
 export type AgentPromptTag = {

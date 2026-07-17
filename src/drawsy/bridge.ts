@@ -21,6 +21,7 @@ import {
 import path from "node:path";
 
 import { CodexAppServer } from "./codex-app-server.js";
+import { OpenCodeAppServer } from "./opencode-app-server.js";
 import { pickFolder } from "./folder-picker.js";
 import {
   createCanvasImageAsset,
@@ -42,6 +43,7 @@ import {
   parseAgentResourceTurn,
   isConnectorCapability,
   type AgentConnectorTurn,
+  type AgentEngine,
   type AgentResourceTurn,
   type AgentSettingsPatch,
   type AgentPromptTag,
@@ -161,7 +163,8 @@ type Session = {
   contextCaptures: Map<string, StoredContextCapture>;
   activeConnectorTurn: AgentConnectorTurn | null;
   activeResourceTurn: AgentResourceTurn | null;
-  codex: CodexAppServer;
+  engine: AgentEngine;
+  agent: CodexAppServer | OpenCodeAppServer;
   remoteWorkspacePath: string | null;
   previewPort: number | null;
   touchedAt: number;
@@ -403,7 +406,7 @@ export const createDrawsyBridge = (
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
     previewProxy?.removeSession(session.id);
-    session.codex.close();
+    session.agent.close();
     if (previewPorts) {
       const releasePort = setTimeout(
         () => previewPorts.release(session.id),
@@ -1303,6 +1306,7 @@ export const createDrawsyBridge = (
         const canvasId = typeof body.canvasId === "string" ? body.canvasId : "";
         const canvasName =
           typeof body.canvasName === "string" ? body.canvasName : "Untitled";
+        const engine = body.engine === undefined ? "codex" : body.engine;
         const surfaceKind = body.surfaceKind ?? "canvas";
         const surfaceId =
           typeof body.surfaceId === "string" && body.surfaceId.trim()
@@ -1351,6 +1355,23 @@ export const createDrawsyBridge = (
           });
           return;
         }
+        const validatedSurfaceKind = surfaceKind as DrawsySurfaceKind;
+        if (engine !== "codex" && engine !== "opencode") {
+          json(response, 400, {
+            error: {
+              code: "engine_invalid",
+              message: "The Drawsy agent engine is invalid."
+            }
+          });
+          return;
+        }
+        if (engine === "opencode" && remoteRuntime) {
+          throw new BridgeRequestError(
+            501,
+            "opencode_remote_unavailable",
+            "OpenCode is available locally only."
+          );
+        }
         if (
           surfaceId &&
           (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
@@ -1380,7 +1401,7 @@ export const createDrawsyBridge = (
         }
         let remoteWorkspacePath: string | null = null;
         let sessionRef: Session | null = null;
-        let codex: CodexAppServer;
+        let agent: CodexAppServer | OpenCodeAppServer;
         try {
           remoteWorkspacePath = remoteRuntime
             ? await createRemoteSessionWorkspace(remoteRuntime, id, folder.path)
@@ -1389,44 +1410,53 @@ export const createDrawsyBridge = (
             ? { ...folder, path: remoteWorkspacePath }
             : folder;
           await prepareContextStore(sessionFolder.path);
-          codex = await CodexAppServer.start(
-            sessionFolder.path,
-            {
-              id,
-              secret: internalSecret,
-              bridgeUrl,
-              surfaceKind,
-              surfaceId,
-              surfaceName,
-              isolateProcessGroup: Boolean(remoteRuntime),
-              previewPort
-            },
-            (event) => sessionRef && emit(sessionRef, event),
-            (image) => {
-              if (!sessionRef) return;
-              const savedPath =
-                image.savedPath && path.isAbsolute(image.savedPath)
-                  ? path.resolve(image.savedPath)
-                  : undefined;
-              const maxDataUrlLength =
-                Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
-              const result =
-                image.result?.startsWith("data:image/") &&
-                image.result.length <= maxDataUrlLength
-                  ? image.result
-                  : undefined;
-              if (!savedPath && !result) return;
-              sessionRef.generatedImages.push({
-                id: image.id,
-                savedPath,
-                result,
-                createdAt: Date.now()
-              });
-              if (sessionRef.generatedImages.length > 8) {
-                sessionRef.generatedImages.shift();
+          const agentOptions = {
+            id,
+            secret: internalSecret,
+            bridgeUrl,
+            surfaceKind: validatedSurfaceKind,
+            surfaceId,
+            surfaceName,
+            isolateProcessGroup: Boolean(remoteRuntime),
+            previewPort
+          };
+          if (engine === "opencode") {
+            agent = await OpenCodeAppServer.start(
+              sessionFolder.path,
+              agentOptions,
+              (event) => sessionRef && emit(sessionRef, event)
+            );
+          } else {
+            agent = await CodexAppServer.start(
+              sessionFolder.path,
+              agentOptions,
+              (event) => sessionRef && emit(sessionRef, event),
+              (image) => {
+                if (!sessionRef) return;
+                const savedPath =
+                  image.savedPath && path.isAbsolute(image.savedPath)
+                    ? path.resolve(image.savedPath)
+                    : undefined;
+                const maxDataUrlLength =
+                  Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
+                const result =
+                  image.result?.startsWith("data:image/") &&
+                  image.result.length <= maxDataUrlLength
+                    ? image.result
+                    : undefined;
+                if (!savedPath && !result) return;
+                sessionRef.generatedImages.push({
+                  id: image.id,
+                  savedPath,
+                  result,
+                  createdAt: Date.now()
+                });
+                if (sessionRef.generatedImages.length > 8) {
+                  sessionRef.generatedImages.shift();
+                }
               }
-            }
-          );
+            );
+          }
         } catch (error) {
           previewPorts?.release(id);
           if (remoteWorkspacePath) {
@@ -1443,7 +1473,7 @@ export const createDrawsyBridge = (
           internalSecret,
           canvasId: canvasId || null,
           canvasName,
-          surfaceKind,
+          surfaceKind: validatedSurfaceKind,
           surfaceId,
           surfaceName,
           folder: sessionFolder,
@@ -1453,7 +1483,8 @@ export const createDrawsyBridge = (
           contextCaptures: new Map(),
           activeConnectorTurn: null,
           activeResourceTurn: null,
-          codex,
+          engine,
+          agent,
           remoteWorkspacePath,
           previewPort,
           touchedAt: Date.now()
@@ -1485,7 +1516,7 @@ export const createDrawsyBridge = (
             type: "session.ready",
             data: {
               folderName: session.folder.name,
-              agent: session.codex.metadata
+              agent: session.agent.metadata
             }
           })}\n`
         );
@@ -1522,7 +1553,7 @@ export const createDrawsyBridge = (
         session.activeConnectorTurn = connectorTurn;
         session.activeResourceTurn = resourceTurn;
         try {
-          await session.codex.startTurn(
+          await session.agent.startTurn(
             message,
             {
               skills: parsePromptTags(body.skills, "skills"),
@@ -1554,7 +1585,7 @@ export const createDrawsyBridge = (
           decodeURIComponent(controlsMatch[1]!)
         );
         if (!session) return;
-        json(response, 200, await session.codex.getControls());
+        json(response, 200, await session.agent.getControls());
         return;
       }
 
@@ -1571,6 +1602,7 @@ export const createDrawsyBridge = (
         const body = await readJson(request);
         const allowedKeys = new Set([
           "model",
+          "modelProvider",
           "effort",
           "accessMode",
           "internetEnabled"
@@ -1579,13 +1611,15 @@ export const createDrawsyBridge = (
           json(response, 400, {
             error: {
               code: "invalid_settings",
-              message: "Unknown Codex setting."
+              message: "Unknown agent setting."
             }
           });
           return;
         }
         if (
           (body.model !== undefined && typeof body.model !== "string") ||
+          (body.modelProvider !== undefined &&
+            typeof body.modelProvider !== "string") ||
           (body.effort !== undefined && typeof body.effort !== "string") ||
           (body.accessMode !== undefined &&
             body.accessMode !== "workspace" &&
@@ -1596,7 +1630,7 @@ export const createDrawsyBridge = (
           json(response, 400, {
             error: {
               code: "invalid_settings",
-              message: "Invalid Codex setting value."
+              message: "Invalid agent setting value."
             }
           });
           return;
@@ -1604,7 +1638,51 @@ export const createDrawsyBridge = (
         json(
           response,
           200,
-          await session.codex.updateSettings(body as AgentSettingsPatch)
+          await session.agent.updateSettings(body as AgentSettingsPatch)
+        );
+        return;
+      }
+
+      const providerKeyMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/provider-key$/
+      );
+      if (request.method === "POST" && providerKeyMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(providerKeyMatch[1]!)
+        );
+        if (!session) return;
+        if (session.engine !== "opencode" || !(session.agent instanceof OpenCodeAppServer)) {
+          json(response, 400, {
+            error: {
+              code: "provider_key_unsupported",
+              message: "Session-only API keys are available with OpenCode."
+            }
+          });
+          return;
+        }
+        const body = await readJson(request);
+        if (
+          Object.keys(body).some((key) => key !== "providerId" && key !== "apiKey") ||
+          typeof body.providerId !== "string" ||
+          typeof body.apiKey !== "string"
+        ) {
+          json(response, 400, {
+            error: {
+              code: "provider_key_invalid",
+              message: "A provider and API key are required."
+            }
+          });
+          return;
+        }
+        json(
+          response,
+          200,
+          await session.agent.setProviderApiKey({
+            providerId: body.providerId,
+            apiKey: body.apiKey
+          })
         );
         return;
       }
