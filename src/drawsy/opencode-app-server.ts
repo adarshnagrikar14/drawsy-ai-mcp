@@ -58,6 +58,7 @@ type OpenCodeEvent = {
 };
 
 const OPEN_CODE_READY_TIMEOUT_MS = 20_000;
+const OPEN_CODE_HEALTH_PROBE_TIMEOUT_MS = 1_000;
 
 const sleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -482,7 +483,14 @@ export class OpenCodeAppServer {
     let lastError: unknown;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(`${this.baseUrl}/global/health`);
+        const response = await fetch(`${this.baseUrl}/global/health`, {
+          signal: AbortSignal.timeout(
+            Math.max(
+              1,
+              Math.min(OPEN_CODE_HEALTH_PROBE_TIMEOUT_MS, deadline - Date.now())
+            )
+          )
+        });
         if (response.ok) return;
       } catch (error) {
         lastError = error;
