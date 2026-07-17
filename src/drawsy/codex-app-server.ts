@@ -40,235 +40,190 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
       item.tool === "read_current_canvas"
         ? { started: "Reading current canvas", completed: "Canvas read" }
         : item.tool === "apply_canvas_changes"
-          ? { started: "Updating canvas", completed: "Canvas updated" }
-          : item.tool === "add_image_from_file"
-            ? { started: "Adding image to canvas", completed: "Image added" }
-            : item.tool === "capture_canvas_context"
-              ? {
-                  started: "Capturing canvas context",
-                  completed: "Context captured"
-                }
-              : item.tool === "replace_canvas_image_from_file"
-                ? {
-                    started: "Replacing canvas image",
-                    completed: "Image replaced"
-                  }
-                : item.tool === "list_connected_sources"
-                  ? {
-                      started: "Checking connected sources",
-                      completed: "Sources ready"
-                    }
-                  : item.tool === "search_connected_source"
-                    ? {
-                        started: "Searching connected source",
-                        completed: "Source searched"
-                      }
-                    : item.tool === "list_connected_meeting_tools"
-                      ? {
-                          started: "Checking meeting tools",
-                          completed: "Meeting tools ready"
-                        }
-                      : item.tool === "call_connected_meeting_tool"
-                        ? {
-                            started: "Reading meeting source",
-                            completed: "Meeting source ready"
-                          }
-                        : item.tool === "list_aws_regions"
-                          ? {
-                              started: "Checking AWS regions",
-                              completed: "AWS regions ready"
-                            }
-                          : item.tool === "search_aws_resources"
-                            ? {
-                                started: "Searching AWS infrastructure",
-                                completed: "AWS resources ready"
-                              }
-                            : item.tool ===
-                                "list_aws_cloudformation_stacks"
-                              ? {
-                                  started: "Checking CloudFormation",
-                                  completed: "CloudFormation stacks ready"
-                                }
-                    : item.tool === "list_mail_messages"
-                      ? { started: "Checking mail", completed: "Mail ready" }
-                      : item.tool === "list_calendars"
-                        ? {
-                            started: "Checking calendars",
-                            completed: "Calendars ready"
-                          }
-                        : item.tool === "list_calendar_events"
-                          ? {
-                              started: "Checking calendar",
-                              completed: "Events ready"
-                            }
-                          : item.tool === "list_drive_files"
-                            ? {
-                                started: "Checking Drive",
-                                completed: "Drive files ready"
-                              }
-                            : item.tool === "list_github_repositories"
-                              ? {
-                                  started: "Checking repositories",
-                                  completed: "Repositories ready"
-                                }
-                              : item.tool === "list_github_repository_contents"
-                                ? {
-                                    started: "Browsing repository",
-                                    completed: "Repository contents ready"
-                                  }
-                                : item.tool === "list_github_issues"
-                                  ? {
-                                      started: "Checking issues",
-                                      completed: "Issues ready"
-                                    }
-                                  : item.tool === "list_github_pull_requests"
-                                    ? {
-                                        started: "Checking pull requests",
-                                        completed: "Pull requests ready"
-                                      }
-                                    : item.tool === "list_notion_content"
-                                      ? {
-                                          started: "Checking Notion",
-                                          completed: "Notion content ready"
-                                        }
-                                      : item.tool === "list_slack_channels"
-                                        ? {
-                                            started: "Checking Slack channels",
-                                            completed: "Channels ready"
-                                          }
-                                        : item.tool === "list_slack_messages"
-                                          ? {
-                                              started: "Checking Slack",
-                                              completed: "Slack messages ready"
-                                            }
-                                          : item.tool === "read_connected_item"
-                                            ? {
-                                                started:
-                                                  "Reading connected item",
-                                                completed: "Source read"
-                                              }
-                                            : item.tool === "list_kanban_boards"
-                                              ? {
-                                                  started:
-                                                    "Checking Kanban boards",
-                                                  completed: "Boards ready"
-                                                }
-                                              : item.tool ===
-                                                  "read_kanban_board"
-                                                ? {
-                                                    started:
-                                                      "Reading Kanban board",
-                                                    completed: "Board ready"
-                                                  }
-                                                : item.tool ===
-                                                    "create_kanban_card"
-                                                  ? {
-                                                      started:
-                                                        "Creating Kanban card",
-                                                      completed: "Card created"
-                                                    }
-                                                  : item.tool ===
-                                                      "update_kanban_card"
-                                                    ? {
-                                                        started:
-                                                          "Updating Kanban card",
-                                                        completed:
-                                                          "Card updated"
-                                                      }
-                                                    : item.tool ===
-                                                        "move_kanban_card"
-                                                      ? {
-                                                          started:
-                                                            "Moving Kanban card",
-                                                          completed:
-                                                            "Card moved"
-                                                        }
-                                                      : item.tool ===
-                                                          "create_kanban_checklist_item"
-                                                        ? {
-                                                            started:
-                                                              "Adding checklist item",
-                                                            completed:
-                                                              "Checklist updated"
-                                                          }
-                                                        : item.tool ===
-                                                            "update_kanban_checklist_item"
-                                                          ? {
-                                                              started:
-                                                                "Updating checklist",
-                                                              completed:
-                                                                "Checklist updated"
-                                                            }
-                                                          : item.tool ===
-                                                              "link_current_canvas_to_kanban_card"
-                                                            ? {
-                                                                started:
-                                                                  "Linking current canvas",
-                                                                completed:
-                                                                  "Canvas linked"
-                                                              }
-                                                            : item.tool ===
-                                                                "list_jira_connections"
-                                                              ? {
-                                                                  started:
-                                                                    "Checking Jira connections",
-                                                                  completed:
-                                                                    "Jira ready"
-                                                                }
-                                                              : item.tool ===
-                                                                  "list_jira_projects"
-                                                                ? {
-                                                                    started:
-                                                                      "Checking Jira projects",
-                                                                    completed:
-                                                                      "Projects ready"
-                                                                  }
-                                                                : item.tool ===
-                                                                    "search_jira_issues"
-                                                                  ? {
-                                                                      started:
-                                                                        "Searching Jira issues",
-                                                                      completed:
-                                                                        "Issues ready"
-                                                                    }
-                                                                  : item.tool ===
-                                                                      "read_jira_issue"
-                                                                    ? {
-                                                                        started:
-                                                                          "Reading Jira issue",
-                                                                        completed:
-                                                                          "Issue ready"
-                                                                      }
-                                                                    : item.tool ===
-                                                                        "list_jira_boards"
-                                                                      ? {
-                                                                          started:
-                                                                            "Checking Jira boards",
-                                                                          completed:
-                                                                            "Boards ready"
-                                                                        }
-                                                                      : item.tool ===
-                                                                          "list_jira_sprints"
-                                                                        ? {
-                                                                            started:
-                                                                              "Checking Jira sprints",
-                                                                            completed:
-                                                                              "Sprints ready"
-                                                                          }
-                                                                        : item.tool ===
-                                                                            "list_jira_backlog"
-                                                                          ? {
-                                                                              started:
-                                                                                "Checking Jira backlog",
-                                                                              completed:
-                                                                                "Backlog ready"
-                                                                            }
-                                                                          : {
-                                                                              started:
-                                                                                "Working on the canvas",
-                                                                              completed:
-                                                                                "Canvas tool finished"
-                                                                            };
+        ? { started: "Updating canvas", completed: "Canvas updated" }
+        : item.tool === "add_image_from_file"
+        ? { started: "Adding image to canvas", completed: "Image added" }
+        : item.tool === "capture_canvas_context"
+        ? {
+            started: "Capturing canvas context",
+            completed: "Context captured"
+          }
+        : item.tool === "replace_canvas_image_from_file"
+        ? {
+            started: "Replacing canvas image",
+            completed: "Image replaced"
+          }
+        : item.tool === "list_connected_sources"
+        ? {
+            started: "Checking connected sources",
+            completed: "Sources ready"
+          }
+        : item.tool === "search_connected_source"
+        ? {
+            started: "Searching connected source",
+            completed: "Source searched"
+          }
+        : item.tool === "list_connected_meeting_tools"
+        ? {
+            started: "Checking meeting tools",
+            completed: "Meeting tools ready"
+          }
+        : item.tool === "call_connected_meeting_tool"
+        ? {
+            started: "Reading meeting source",
+            completed: "Meeting source ready"
+          }
+        : item.tool === "list_aws_regions"
+        ? {
+            started: "Checking AWS regions",
+            completed: "AWS regions ready"
+          }
+        : item.tool === "search_aws_resources"
+        ? {
+            started: "Searching AWS infrastructure",
+            completed: "AWS resources ready"
+          }
+        : item.tool === "list_aws_cloudformation_stacks"
+        ? {
+            started: "Checking CloudFormation",
+            completed: "CloudFormation stacks ready"
+          }
+        : item.tool === "list_mail_messages"
+        ? { started: "Checking mail", completed: "Mail ready" }
+        : item.tool === "list_calendars"
+        ? {
+            started: "Checking calendars",
+            completed: "Calendars ready"
+          }
+        : item.tool === "list_calendar_events"
+        ? {
+            started: "Checking calendar",
+            completed: "Events ready"
+          }
+        : item.tool === "list_drive_files"
+        ? {
+            started: "Checking Drive",
+            completed: "Drive files ready"
+          }
+        : item.tool === "list_github_repositories"
+        ? {
+            started: "Checking repositories",
+            completed: "Repositories ready"
+          }
+        : item.tool === "list_github_repository_contents"
+        ? {
+            started: "Browsing repository",
+            completed: "Repository contents ready"
+          }
+        : item.tool === "list_github_issues"
+        ? {
+            started: "Checking issues",
+            completed: "Issues ready"
+          }
+        : item.tool === "list_github_pull_requests"
+        ? {
+            started: "Checking pull requests",
+            completed: "Pull requests ready"
+          }
+        : item.tool === "list_notion_content"
+        ? {
+            started: "Checking Notion",
+            completed: "Notion content ready"
+          }
+        : item.tool === "list_slack_channels"
+        ? {
+            started: "Checking Slack channels",
+            completed: "Channels ready"
+          }
+        : item.tool === "list_slack_messages"
+        ? {
+            started: "Checking Slack",
+            completed: "Slack messages ready"
+          }
+        : item.tool === "read_connected_item"
+        ? {
+            started: "Reading connected item",
+            completed: "Source read"
+          }
+        : item.tool === "list_kanban_boards"
+        ? {
+            started: "Checking Kanban boards",
+            completed: "Boards ready"
+          }
+        : item.tool === "read_kanban_board"
+        ? {
+            started: "Reading Kanban board",
+            completed: "Board ready"
+          }
+        : item.tool === "create_kanban_card"
+        ? {
+            started: "Creating Kanban card",
+            completed: "Card created"
+          }
+        : item.tool === "update_kanban_card"
+        ? {
+            started: "Updating Kanban card",
+            completed: "Card updated"
+          }
+        : item.tool === "move_kanban_card"
+        ? {
+            started: "Moving Kanban card",
+            completed: "Card moved"
+          }
+        : item.tool === "create_kanban_checklist_item"
+        ? {
+            started: "Adding checklist item",
+            completed: "Checklist updated"
+          }
+        : item.tool === "update_kanban_checklist_item"
+        ? {
+            started: "Updating checklist",
+            completed: "Checklist updated"
+          }
+        : item.tool === "link_current_canvas_to_kanban_card"
+        ? {
+            started: "Linking current canvas",
+            completed: "Canvas linked"
+          }
+        : item.tool === "list_jira_connections"
+        ? {
+            started: "Checking Jira connections",
+            completed: "Jira ready"
+          }
+        : item.tool === "list_jira_projects"
+        ? {
+            started: "Checking Jira projects",
+            completed: "Projects ready"
+          }
+        : item.tool === "search_jira_issues"
+        ? {
+            started: "Searching Jira issues",
+            completed: "Issues ready"
+          }
+        : item.tool === "read_jira_issue"
+        ? {
+            started: "Reading Jira issue",
+            completed: "Issue ready"
+          }
+        : item.tool === "list_jira_boards"
+        ? {
+            started: "Checking Jira boards",
+            completed: "Boards ready"
+          }
+        : item.tool === "list_jira_sprints"
+        ? {
+            started: "Checking Jira sprints",
+            completed: "Sprints ready"
+          }
+        : item.tool === "list_jira_backlog"
+        ? {
+            started: "Checking Jira backlog",
+            completed: "Backlog ready"
+          }
+        : {
+            started: "Working on the canvas",
+            completed: "Canvas tool finished"
+          };
     return {
       tool: server === "drawsy" ? item.tool : `${server}/${item.tool}`,
       startedMessage:
@@ -425,7 +380,10 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Codex agent inside Drawsy AI.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
-const getDeveloperInstructions = (surfaceKind: DrawsySurfaceKind) =>
+const getDeveloperInstructions = (
+  surfaceKind: DrawsySurfaceKind,
+  previewPort: number | null
+) =>
   `${DEVELOPER_INSTRUCTIONS}${
     surfaceKind === "canvas" || surfaceKind === "presentation"
       ? `
@@ -434,7 +392,11 @@ const getDeveloperInstructions = (surfaceKind: DrawsySurfaceKind) =>
 - When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
 - For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
 - For an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
-- When the user asks to build or preview a local web app, start its development server inside the selected folder and call attach_live_preview with the loopback URL. Do not create a saved iframe element for a live local service.
+- When the user asks to build or preview a local web app, start its development server inside the selected folder${
+          previewPort
+            ? ` on the session's assigned port ${previewPort} (also available as DRAWSY_PREVIEW_PORT)`
+            : ""
+        } and call attach_live_preview with that loopback URL. Pass the framework's supported host/port flags or environment variables; do not rewrite application behavior merely to force a port. Do not create a saved iframe element for a live local service.
 - Local development servers may bind to loopback without internet access. If declared dependencies are missing and installation needs the internet, explain that once and wait for the user to enable internet instead of retrying package managers or bypassing the sandbox.
 - Never attempt to discover or access another canvas.${
           surfaceKind === "presentation"
@@ -443,14 +405,14 @@ const getDeveloperInstructions = (surfaceKind: DrawsySurfaceKind) =>
             : ""
         }`
       : surfaceKind === "kanban"
-        ? `
+      ? `
 - This chat is opened from a Kanban board. The current board is available through read_current_kanban_board when the turn carries its first-party resource grant. Existing Drawsy membership, role, and board-lock rules govern every change.
 - No canvas is attached. Do not call canvas tools or claim that a canvas can be linked unless the user explicitly attaches one from a canvas surface.`
-        : surfaceKind === "jira"
-          ? `
+      : surfaceKind === "jira"
+      ? `
 - This chat is opened from Jira Workspace. Jira is available for read-only work when the turn carries its first-party resource grant.
 - No canvas is attached. Do not call canvas tools.`
-          : `
+      : `
 - No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Work from the selected folder, user attachments, and explicitly tagged sources or resources only. Do not call canvas tools or assume product context.`
   }`;
 
@@ -462,6 +424,16 @@ const BLOCKED_PLUGIN_IDS = new Set([
 
 const blockedCapability = (value: string) =>
   /(^|[-_\s])(browser|chrome|computer)([-_\s]|$)/i.test(value);
+
+const codexEnvironment = (previewPort: number | null) => {
+  const environment = { ...process.env };
+  delete environment.PORT;
+  if (previewPort) {
+    environment.PORT = String(previewPort);
+    environment.DRAWSY_PREVIEW_PORT = String(previewPort);
+  }
+  return environment;
+};
 
 export class CodexAppServer {
   private readonly process: ChildProcessWithoutNullStreams;
@@ -492,6 +464,7 @@ export class CodexAppServer {
       surfaceId: string | null;
       surfaceName: string;
       isolateProcessGroup: boolean;
+      previewPort: number | null;
     },
     private readonly emit: (event: BridgeEvent) => void,
     private readonly registerGeneratedImage: (image: {
@@ -537,7 +510,8 @@ export class CodexAppServer {
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
-        detached: session.isolateProcessGroup && process.platform !== "win32"
+        detached: session.isolateProcessGroup && process.platform !== "win32",
+        env: codexEnvironment(session.previewPort)
       }
     );
     readline
@@ -572,6 +546,7 @@ export class CodexAppServer {
       surfaceId: string | null;
       surfaceName: string;
       isolateProcessGroup: boolean;
+      previewPort: number | null;
     },
     emit: (event: BridgeEvent) => void,
     registerGeneratedImage: (image: {
@@ -637,7 +612,10 @@ export class CodexAppServer {
             DRAWSY_SESSION_ID: this.session.id,
             DRAWSY_SESSION_SECRET: this.session.secret,
             DRAWSY_WORKSPACE_ROOT: this.folderPath,
-            DRAWSY_SURFACE_KIND: this.session.surfaceKind
+            DRAWSY_SURFACE_KIND: this.session.surfaceKind,
+            ...(this.session.previewPort
+              ? { DRAWSY_PREVIEW_PORT: String(this.session.previewPort) }
+              : {})
           },
           enabled: true,
           startup_timeout_sec: 15,
@@ -677,7 +655,10 @@ export class CodexAppServer {
       runtimeWorkspaceRoots: [this.folderPath],
       approvalPolicy: "never",
       ephemeral: true,
-      developerInstructions: getDeveloperInstructions(this.session.surfaceKind),
+      developerInstructions: getDeveloperInstructions(
+        this.session.surfaceKind,
+        this.session.previewPort
+      ),
       personality: "pragmatic",
       config: {
         ...this.threadBaseConfig,
@@ -1442,8 +1423,8 @@ export class CodexAppServer {
         typeof params.message === "string"
           ? params.message
           : typeof params.summary === "string"
-            ? params.summary
-            : "Codex reported a warning.";
+          ? params.summary
+          : "Codex reported a warning.";
       this.emit({
         type: "tool.status",
         data: {

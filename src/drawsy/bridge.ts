@@ -55,6 +55,7 @@ import {
 } from "./protocol.js";
 import {
   createRemoteSessionWorkspace,
+  PreviewPortAllocator,
   readRemoteRuntimeConfig,
   RemotePreviewProxy,
   removeRemoteSessionWorkspace
@@ -112,7 +113,10 @@ const readDrawDocument = async (folder: FolderSelection) => {
     name: "DRAW.md",
     content,
     hash: createHash("sha256").update(content).digest("hex"),
-    sourceId: createHash("sha256").update(folder.path).digest("hex").slice(0, 24)
+    sourceId: createHash("sha256")
+      .update(folder.path)
+      .digest("hex")
+      .slice(0, 24)
   };
 };
 
@@ -158,15 +162,12 @@ type Session = {
   activeResourceTurn: AgentResourceTurn | null;
   codex: CodexAppServer;
   remoteWorkspacePath: string | null;
+  previewPort: number | null;
   touchedAt: number;
 };
 
 class BridgeRequestError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string
-  ) {
+  constructor(readonly status: number, readonly code: string, message: string) {
     super(message);
   }
 }
@@ -339,6 +340,12 @@ export const createDrawsyBridge = (
   const previewProxy = remoteRuntime
     ? new RemotePreviewProxy(remoteRuntime)
     : null;
+  const previewPorts = remoteRuntime
+    ? new PreviewPortAllocator(
+        remoteRuntime.previewPortStart,
+        remoteRuntime.previewPortEnd
+      )
+    : null;
 
   const emit = (session: Session, event: BridgeEvent) => {
     session.touchedAt = Date.now();
@@ -382,6 +389,7 @@ export const createDrawsyBridge = (
 
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
+    previewPorts?.release(session.id);
     previewProxy?.removeSession(session.id);
     session.codex.close();
     for (const pending of session.canvasPending.values()) {
@@ -531,53 +539,48 @@ export const createDrawsyBridge = (
             "limit"
           ])
         : action === "read"
-          ? new Set(["capability", "connectionId", "resourceId"])
-          : action === "mcp-tools"
-            ? new Set(["capability", "connectionId"])
-            : action === "mcp-call"
-              ? new Set([
-                  "capability",
-                  "connectionId",
-                  "toolName",
-                  "arguments"
-                ])
-          : new Set([
-              "capability",
-              "connectionId",
-              "kind",
-              "query",
-              "after",
-              "before",
-              "from",
-              "to",
-              "subject",
-              "label",
-              "includeSpamTrash",
-              "calendarId",
-              "channelId",
-              "startTime",
-              "endTime",
-              "timeZone",
-              "mimeType",
-              "orderBy",
-              "object",
-              "sortDirection",
-              "owner",
-              "visibility",
-              "repository",
-              "path",
-              "ref",
-              "state",
-              "labels",
-              "since",
-              "sort",
-              "direction",
-              "region",
-              "head",
-              "base",
-              "cursor",
-              "limit"
-            ]);
+        ? new Set(["capability", "connectionId", "resourceId"])
+        : action === "mcp-tools"
+        ? new Set(["capability", "connectionId"])
+        : action === "mcp-call"
+        ? new Set(["capability", "connectionId", "toolName", "arguments"])
+        : new Set([
+            "capability",
+            "connectionId",
+            "kind",
+            "query",
+            "after",
+            "before",
+            "from",
+            "to",
+            "subject",
+            "label",
+            "includeSpamTrash",
+            "calendarId",
+            "channelId",
+            "startTime",
+            "endTime",
+            "timeZone",
+            "mimeType",
+            "orderBy",
+            "object",
+            "sortDirection",
+            "owner",
+            "visibility",
+            "repository",
+            "path",
+            "ref",
+            "state",
+            "labels",
+            "since",
+            "sort",
+            "direction",
+            "region",
+            "head",
+            "base",
+            "cursor",
+            "limit"
+          ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
       throw new BridgeRequestError(
         400,
@@ -741,8 +744,8 @@ export const createDrawsyBridge = (
     const resource = operation.startsWith("kanban_")
       ? "kanban"
       : operation.startsWith("jira_")
-        ? "jira"
-        : null;
+      ? "jira"
+      : null;
     if (!resource || !active.resources.includes(resource)) {
       throw new BridgeRequestError(
         403,
@@ -1113,38 +1116,46 @@ export const createDrawsyBridge = (
           | "replace-image"
           | "preview";
         const body = await readJson(request);
+        const parsedPreview =
+          action === "preview" ? parseLivePreviewRequest(body) : null;
+        if (parsedPreview && session.previewPort !== null) {
+          const requestedPort = Number(new URL(parsedPreview.url).port);
+          if (requestedPort !== session.previewPort) {
+            throw new BridgeRequestError(
+              409,
+              "preview_port_mismatch",
+              `This session's live preview must use port ${session.previewPort}.`
+            );
+          }
+        }
         const result =
           action === "image"
             ? await importCanvasImage(session, body)
             : action === "replace-image"
-              ? await replaceCanvasImage(session, body)
-              : action === "preview"
-                ? await requestCanvas(session, "preview", {
-                    previewRequest: previewProxy
-                      ? previewProxy.attach(
-                          session.id,
-                          parseLivePreviewRequest(body),
-                          () => {
-                            session.touchedAt = Date.now();
-                          }
-                        )
-                      : parseLivePreviewRequest(body)
+            ? await replaceCanvasImage(session, body)
+            : action === "preview"
+            ? await requestCanvas(session, "preview", {
+                previewRequest: previewProxy
+                  ? previewProxy.attach(session.id, parsedPreview!, () => {
+                      session.touchedAt = Date.now();
+                    })
+                  : parsedPreview!
+              })
+            : action === "context"
+            ? resolveContextCaptures(session, [
+                parseCanvasContextReference(
+                  await requestCanvas(session, "capture", {
+                    contextRequest: parseCanvasContextRequest(body)
                   })
-              : action === "context"
-                ? resolveContextCaptures(session, [
-                    parseCanvasContextReference(
-                      await requestCanvas(session, "capture", {
-                        contextRequest: parseCanvasContextRequest(body)
-                      })
-                    )
-                  ])[0]
-                : await requestCanvas(
-                    session,
-                    action,
-                    action === "apply"
-                      ? { operations: parseCanvasOperations(body) }
-                      : undefined
-                  );
+                )
+              ])[0]
+            : await requestCanvas(
+                session,
+                action,
+                action === "apply"
+                  ? { operations: parseCanvasOperations(body) }
+                  : undefined
+              );
         json(response, 200, result);
         return;
       }
@@ -1282,8 +1293,8 @@ export const createDrawsyBridge = (
           typeof body.surfaceName === "string" && body.surfaceName.trim()
             ? body.surfaceName.trim().slice(0, 200)
             : surfaceKind === "neutral"
-              ? "Drawsy"
-              : canvasName;
+            ? "Drawsy"
+            : canvasName;
         const folder = selections.get(selectionId);
         if (!folder || folder.expiresAt <= Date.now()) {
           json(response, 400, {
@@ -1336,16 +1347,29 @@ export const createDrawsyBridge = (
         const id = randomUUID();
         const token = randomBytes(32).toString("base64url");
         const internalSecret = randomBytes(32).toString("base64url");
-        const remoteWorkspacePath = remoteRuntime
-          ? await createRemoteSessionWorkspace(remoteRuntime, id, folder.path)
-          : null;
-        const sessionFolder: FolderSelection = remoteWorkspacePath
-          ? { ...folder, path: remoteWorkspacePath }
-          : folder;
-        await prepareContextStore(sessionFolder.path);
+        const previewPort =
+          previewPorts &&
+          (surfaceKind === "canvas" || surfaceKind === "presentation")
+            ? await previewPorts.acquire(id)
+            : null;
+        if (previewPorts && previewPort === null) {
+          throw new BridgeRequestError(
+            503,
+            "preview_capacity_exhausted",
+            "No isolated live-preview port is currently available."
+          );
+        }
+        let remoteWorkspacePath: string | null = null;
         let sessionRef: Session | null = null;
         let codex: CodexAppServer;
         try {
+          remoteWorkspacePath = remoteRuntime
+            ? await createRemoteSessionWorkspace(remoteRuntime, id, folder.path)
+            : null;
+          const sessionFolder: FolderSelection = remoteWorkspacePath
+            ? { ...folder, path: remoteWorkspacePath }
+            : folder;
+          await prepareContextStore(sessionFolder.path);
           codex = await CodexAppServer.start(
             sessionFolder.path,
             {
@@ -1355,7 +1379,8 @@ export const createDrawsyBridge = (
               surfaceKind,
               surfaceId,
               surfaceName,
-              isolateProcessGroup: Boolean(remoteRuntime)
+              isolateProcessGroup: Boolean(remoteRuntime),
+              previewPort
             },
             (event) => sessionRef && emit(sessionRef, event),
             (image) => {
@@ -1384,11 +1409,15 @@ export const createDrawsyBridge = (
             }
           );
         } catch (error) {
+          previewPorts?.release(id);
           if (remoteWorkspacePath) {
             await removeRemoteSessionWorkspace(remoteWorkspacePath);
           }
           throw error;
         }
+        const sessionFolder: FolderSelection = remoteWorkspacePath
+          ? { ...folder, path: remoteWorkspacePath }
+          : folder;
         const session: Session = {
           id,
           token,
@@ -1407,6 +1436,7 @@ export const createDrawsyBridge = (
           activeResourceTurn: null,
           codex,
           remoteWorkspacePath,
+          previewPort,
           touchedAt: Date.now()
         };
         sessionRef = session;
@@ -1624,10 +1654,10 @@ export const createDrawsyBridge = (
         error instanceof BridgeRequestError
           ? error.status
           : message.includes("cancelled")
-            ? 409
-            : message.includes("MiB")
-              ? 413
-              : 500;
+          ? 409
+          : message.includes("MiB")
+          ? 413
+          : 500;
       json(response, status, {
         error: {
           code:

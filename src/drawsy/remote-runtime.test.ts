@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   createRemoteSessionWorkspace,
+  PreviewPortAllocator,
   RemotePreviewProxy,
   removeRemoteSessionWorkspace
 } from "./remote-runtime.js";
@@ -82,7 +90,9 @@ test("remote sessions isolate files and proxy a private loopback preview", async
   const config = {
     workspaceRoot: workspaces,
     previewOriginTemplate: `http://{token}.preview.localhost:${gatewayPort}`,
-    idleMs: 20 * 60 * 1000
+    idleMs: 20 * 60 * 1000,
+    previewPortStart: 18_000,
+    previewPortEnd: 18_099
   };
   proxy = new RemotePreviewProxy(config);
 
@@ -136,4 +146,22 @@ test("remote sessions isolate files and proxy a private loopback preview", async
     await close(upstream);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("preview ports are unique per concurrent session and reusable", async () => {
+  const allocator = new PreviewPortAllocator(18_100, 18_104);
+  const ports = await Promise.all(
+    Array.from({ length: 5 }, (_, index) =>
+      allocator.acquire(`session-${index}`)
+    )
+  );
+  assert.equal(
+    ports.every((port) => port !== null),
+    true
+  );
+  assert.equal(new Set(ports).size, 5);
+  allocator.release("session-2");
+  const replacement = await allocator.acquire("session-replacement");
+  assert.equal(typeof replacement, "number");
+  assert.equal(ports.includes(replacement), true);
 });

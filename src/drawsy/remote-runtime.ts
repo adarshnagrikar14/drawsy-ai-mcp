@@ -3,12 +3,15 @@ import { cp, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { createServer } from "node:net";
 import type { Duplex } from "node:stream";
 import path from "node:path";
 
 import type { LivePreviewRequest } from "./protocol.js";
 
 const DEFAULT_REMOTE_IDLE_MS = 20 * 60 * 1000;
+const DEFAULT_PREVIEW_PORT_START = 18_000;
+const DEFAULT_PREVIEW_PORT_END = 18_099;
 const PREVIEW_TOKEN = "previewtoken";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -25,6 +28,8 @@ export type RemoteRuntimeConfig = {
   workspaceRoot: string;
   previewOriginTemplate: string;
   idleMs: number;
+  previewPortStart: number;
+  previewPortEnd: number;
 };
 
 type PreviewTarget = {
@@ -68,8 +73,10 @@ export const readRemoteRuntimeConfig = (): RemoteRuntimeConfig | null => {
   );
   if (
     (previewOrigin.protocol !== "https:" &&
-      !(previewOrigin.protocol === "http:" &&
-        isLoopbackHost(previewOrigin.hostname))) ||
+      !(
+        previewOrigin.protocol === "http:" &&
+        isLoopbackHost(previewOrigin.hostname)
+      )) ||
     previewOrigin.username ||
     previewOrigin.password ||
     previewOrigin.pathname !== "/" ||
@@ -84,17 +91,95 @@ export const readRemoteRuntimeConfig = (): RemoteRuntimeConfig | null => {
   const idleMs = Number.isFinite(configuredIdleMs)
     ? configuredIdleMs
     : DEFAULT_REMOTE_IDLE_MS;
-  if (!Number.isInteger(idleMs) || idleMs < 60_000 || idleMs > 24 * 60 * 60_000) {
+  if (
+    !Number.isInteger(idleMs) ||
+    idleMs < 60_000 ||
+    idleMs > 24 * 60 * 60_000
+  ) {
     throw new Error(
       "DRAWSY_REMOTE_SESSION_IDLE_MS must be between 60000 and 86400000."
+    );
+  }
+  const configuredPortRange =
+    process.env.DRAWSY_PREVIEW_PORT_RANGE?.trim() ||
+    `${DEFAULT_PREVIEW_PORT_START}-${DEFAULT_PREVIEW_PORT_END}`;
+  const portRange = configuredPortRange.match(/^(\d{1,5})-(\d{1,5})$/);
+  const previewPortStart = Number(portRange?.[1]);
+  const previewPortEnd = Number(portRange?.[2]);
+  if (
+    !portRange ||
+    !Number.isInteger(previewPortStart) ||
+    !Number.isInteger(previewPortEnd) ||
+    previewPortStart < 1024 ||
+    previewPortEnd > 65_535 ||
+    previewPortEnd - previewPortStart + 1 < 5
+  ) {
+    throw new Error(
+      "DRAWSY_PREVIEW_PORT_RANGE must be a range of at least five ports between 1024 and 65535."
     );
   }
   return {
     workspaceRoot: path.resolve(workspaceRoot),
     previewOriginTemplate,
-    idleMs
+    idleMs,
+    previewPortStart,
+    previewPortEnd
   };
 };
+
+const portIsAvailable = (port: number) =>
+  new Promise<boolean>((resolve) => {
+    const probe = createServer();
+    probe.unref();
+    probe.once("error", () => resolve(false));
+    probe.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      probe.close((error) => resolve(!error));
+    });
+  });
+
+export class PreviewPortAllocator {
+  private readonly bySession = new Map<string, number>();
+  private readonly leased = new Set<number>();
+  private cursor: number;
+  private allocationQueue = Promise.resolve();
+
+  constructor(private readonly start: number, private readonly end: number) {
+    this.cursor = start;
+  }
+
+  acquire(sessionId: string) {
+    const allocation = this.allocationQueue.then(() =>
+      this.acquireAvailable(sessionId)
+    );
+    this.allocationQueue = allocation.then(
+      () => undefined,
+      () => undefined
+    );
+    return allocation;
+  }
+
+  private async acquireAvailable(sessionId: string) {
+    const existing = this.bySession.get(sessionId);
+    if (existing) return existing;
+    const size = this.end - this.start + 1;
+    for (let offset = 0; offset < size; offset++) {
+      const port = this.start + ((this.cursor - this.start + offset) % size);
+      if (this.leased.has(port) || !(await portIsAvailable(port))) continue;
+      this.bySession.set(sessionId, port);
+      this.leased.add(port);
+      this.cursor = port === this.end ? this.start : port + 1;
+      return port;
+    }
+    return null;
+  }
+
+  release(sessionId: string) {
+    const port = this.bySession.get(sessionId);
+    if (port === undefined) return;
+    this.bySession.delete(sessionId);
+    this.leased.delete(port);
+  }
+}
 
 export const createRemoteSessionWorkspace = async (
   config: RemoteRuntimeConfig,
@@ -119,10 +204,12 @@ export const createRemoteSessionWorkspace = async (
         preserveTimestamps: true,
         filter: (candidate) => {
           const candidateRelative = path.relative(source, candidate);
-          return candidateRelative !== path.join(".drawsy", "context") &&
+          return (
+            candidateRelative !== path.join(".drawsy", "context") &&
             !candidateRelative.startsWith(
               `${path.join(".drawsy", "context")}${path.sep}`
-            );
+            )
+          );
         }
       });
     }
@@ -149,13 +236,12 @@ const requestHeaders = (request: IncomingMessage, target: URL) => {
   return headers;
 };
 
-const writeUpgradeResponse = (
-  socket: Duplex,
-  response: IncomingMessage
-) => {
+const writeUpgradeResponse = (socket: Duplex, response: IncomingMessage) => {
   const lines = [`HTTP/1.1 ${response.statusCode} ${response.statusMessage}`];
   for (let index = 0; index < response.rawHeaders.length; index += 2) {
-    lines.push(`${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`);
+    lines.push(
+      `${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`
+    );
   }
   socket.write(`${lines.join("\r\n")}\r\n\r\n`);
 };

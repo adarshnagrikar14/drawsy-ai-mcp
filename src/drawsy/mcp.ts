@@ -14,8 +14,10 @@ const bridgeUrl = new URL(process.env.DRAWSY_BRIDGE_URL ?? "");
 const sessionId = process.env.DRAWSY_SESSION_ID;
 const sessionSecret = process.env.DRAWSY_SESSION_SECRET;
 const workspaceRoot = process.env.DRAWSY_WORKSPACE_ROOT;
+const previewPort = Number(process.env.DRAWSY_PREVIEW_PORT || 0) || null;
 const surfaceKind = process.env.DRAWSY_SURFACE_KIND as
-  DrawsySurfaceKind | undefined;
+  | DrawsySurfaceKind
+  | undefined;
 const validSurfaceKinds = new Set<DrawsySurfaceKind>([
   "canvas",
   "presentation",
@@ -38,13 +40,7 @@ if (
 }
 
 const callBridge = async (
-  action:
-    | "read"
-    | "apply"
-    | "image"
-    | "context"
-    | "replace-image"
-    | "preview",
+  action: "read" | "apply" | "image" | "context" | "replace-image" | "preview",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -81,13 +77,7 @@ const callBridge = async (
 };
 
 const callConnectorBridge = async (
-  action:
-    | "list"
-    | "search"
-    | "read"
-    | "query"
-    | "mcp-tools"
-    | "mcp-call",
+  action: "list" | "search" | "read" | "query" | "mcp-tools" | "mcp-call",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -289,7 +279,9 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
           content: [
             {
               type: "text",
-              text: `Canvas change exceeds ${MAX_BODY_BYTES / (1024 * 1024)} MiB.`
+              text: `Canvas change exceeds ${
+                MAX_BODY_BYTES / (1024 * 1024)
+              } MiB.`
             }
           ]
         };
@@ -323,8 +315,9 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
   server.registerTool(
     "attach_live_preview",
     {
-      description:
-        "Attach a running local web app to the current canvas as a local-only live preview. Start the development server first, then pass its loopback URL. The preview supports the app's own hot reload and is never added to the saved or collaborative canvas scene.",
+      description: `Attach a running local web app to the current canvas as a local-only live preview. Start the development server first${
+        previewPort ? ` on this session's assigned port ${previewPort}` : ""
+      }, then pass its loopback URL. The preview supports the app's own hot reload and is never added to the saved or collaborative canvas scene.`,
       inputSchema: z.object({
         url: z
           .string()
@@ -332,7 +325,9 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
           .min(1)
           .max(2_048)
           .describe(
-            "Local development URL using localhost, 127.0.0.1, ::1, or a 0.0.0.0 bind address."
+            `Local development URL using localhost, 127.0.0.1, ::1, or a 0.0.0.0 bind address${
+              previewPort ? ` on port ${previewPort}` : ""
+            }.`
           ),
         title: z.string().trim().min(1).max(120).optional(),
         previewId: z
@@ -624,7 +619,10 @@ server.registerTool(
     inputSchema: z.object({
       capability: remoteMcpCapabilitySchema,
       connectionId: connectorConnectionIdSchema,
-      toolName: z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
+      toolName: z
+        .string()
+        .trim()
+        .regex(/^[A-Za-z0-9_.:-]{1,128}$/),
       arguments: remoteMcpArgumentsSchema.default({})
     }),
     annotations: { readOnlyHint: true, destructiveHint: false }
@@ -704,9 +702,7 @@ server.registerTool(
       "Search AWS Resource Explorer in one region through the attached read-only account. Use an empty query for all resources discoverable through the region's Resource Explorer view, or use names, ARNs, and filters such as service:ec2 or resourcetype:ec2:instance. Resource Explorer coverage depends on the account's index and view; if it is unavailable, do not retry this tool in the same turn—use list_aws_cloudformation_stacks for CloudFormation-managed inventory and state the narrower coverage. Use returned opaque ids with read_connected_item.",
     inputSchema: z.object({
       connectionId: connectorConnectionIdSchema,
-      region: z
-        .string()
-        .regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
+      region: z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
       query: z.string().trim().max(1_280),
       cursor: connectorCursorSchema,
       limit: z.number().int().min(1).max(100).default(50)
@@ -750,9 +746,7 @@ server.registerTool(
       "List active CloudFormation stacks in one AWS region through the attached read-only account. Use read_connected_item on a stack result to retrieve its processed template, resource inventory, parameters, outputs, and status before drawing or explaining the architecture.",
     inputSchema: z.object({
       connectionId: connectorConnectionIdSchema,
-      region: z
-        .string()
-        .regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
+      region: z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d$/),
       cursor: connectorCursorSchema,
       limit: z.number().int().min(1).max(100).default(50)
     }),
