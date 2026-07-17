@@ -1369,13 +1369,6 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        if (engine === "opencode" && remoteRuntime) {
-          throw new BridgeRequestError(
-            501,
-            "opencode_remote_unavailable",
-            "OpenCode is available locally only."
-          );
-        }
         if (
           surfaceId &&
           (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))

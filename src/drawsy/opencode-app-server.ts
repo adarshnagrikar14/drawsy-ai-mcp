@@ -245,6 +245,91 @@ ${readablePaths
 ${network}`;
 };
 
+const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => {
+  const environment: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    TZ: process.env.TZ,
+    XDG_DATA_HOME: path.join(runtimePath, "data"),
+    XDG_CONFIG_HOME: path.join(runtimePath, "config"),
+    XDG_CACHE_HOME: path.join(runtimePath, "cache"),
+    XDG_STATE_HOME: path.join(runtimePath, "state"),
+    TMPDIR: path.join(runtimePath, "tmp")
+  };
+  if (previewPort) {
+    environment.PORT = String(previewPort);
+    environment.DRAWSY_PREVIEW_PORT = String(previewPort);
+  }
+  return Object.fromEntries(
+    Object.entries(environment).filter(([, value]) => typeof value === "string")
+  ) as NodeJS.ProcessEnv;
+};
+
+const createLinuxSandboxArguments = (input: {
+  folderPath: string;
+  runtimePath: string;
+  accessMode: AgentAccessMode;
+  executable: string;
+  port: number;
+}) => {
+  const folderParent = path.dirname(input.folderPath);
+  const runtimeParent = path.dirname(input.runtimePath);
+  const workspaceBinding =
+    input.accessMode === "workspace" ? "--bind" : "--ro-bind";
+
+  return [
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--ro-bind",
+    "/",
+    "/",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    // The agent only gets its ephemeral runtime and the selected session workspace.
+    "--tmpfs",
+    "/home",
+    "--tmpfs",
+    "/root",
+    "--tmpfs",
+    "/tmp",
+    "--tmpfs",
+    "/var/tmp",
+    "--tmpfs",
+    "/app/workspace",
+    "--tmpfs",
+    "/app/session-workspaces",
+    "--tmpfs",
+    "/app/codex-runtime",
+    "--dir",
+    folderParent,
+    "--dir",
+    input.folderPath,
+    workspaceBinding,
+    input.folderPath,
+    input.folderPath,
+    "--dir",
+    runtimeParent,
+    "--dir",
+    input.runtimePath,
+    "--bind",
+    input.runtimePath,
+    input.runtimePath,
+    input.executable,
+    "serve",
+    "--pure",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    String(input.port)
+  ];
+};
+
 export class OpenCodeAppServer {
   private process: ChildProcess | null = null;
   private runtimePath: string | null = null;
@@ -292,9 +377,9 @@ export class OpenCodeAppServer {
   }
 
   private async initialize() {
-    if (process.platform !== "darwin") {
+    if (process.platform !== "darwin" && process.platform !== "linux") {
       throw new Error(
-        "OpenCode local sessions require a supported folder sandbox on this device."
+        "OpenCode requires a supported Drawsy folder sandbox on this device."
       );
     }
     await this.startRuntime();
@@ -312,42 +397,44 @@ export class OpenCodeAppServer {
 
     const port = await acquireLoopbackPort();
     const openCodeBinary = resolveOpenCodeBinary();
-    const environment = { ...process.env };
-    delete environment.PORT;
-    delete environment.HOME;
-    environment.XDG_DATA_HOME = path.join(this.runtimePath, "data");
-    environment.XDG_CONFIG_HOME = path.join(this.runtimePath, "config");
-    environment.XDG_CACHE_HOME = path.join(this.runtimePath, "cache");
-    environment.XDG_STATE_HOME = path.join(this.runtimePath, "state");
-    environment.TMPDIR = path.join(this.runtimePath, "tmp");
-    if (this.session.previewPort) {
-      environment.PORT = String(this.session.previewPort);
-      environment.DRAWSY_PREVIEW_PORT = String(this.session.previewPort);
-    }
-
-    const profile = createSandboxProfile({
-      folderPath: this.folderPath,
-      runtimePath: this.runtimePath,
-      accessMode: this.accessMode,
-      internetEnabled: this.internetEnabled
-    });
+    const environment = runtimeEnvironment(
+      this.runtimePath,
+      this.session.previewPort
+    );
+    const isMacOS = process.platform === "darwin";
+    const command = isMacOS ? "/usr/bin/sandbox-exec" : "/usr/bin/bwrap";
+    const args = isMacOS
+      ? [
+          "-p",
+          createSandboxProfile({
+            folderPath: this.folderPath,
+            runtimePath: this.runtimePath,
+            accessMode: this.accessMode,
+            internetEnabled: this.internetEnabled
+          }),
+          openCodeBinary,
+          "serve",
+          "--pure",
+          "--hostname",
+          "127.0.0.1",
+          "--port",
+          String(port)
+        ]
+      : createLinuxSandboxArguments({
+          folderPath: this.folderPath,
+          runtimePath: this.runtimePath,
+          accessMode: this.accessMode,
+          executable: openCodeBinary,
+          port
+        });
     const child = spawn(
-      "/usr/bin/sandbox-exec",
-      [
-        "-p",
-        profile,
-        openCodeBinary,
-        "serve",
-        "--pure",
-        "--hostname",
-        "127.0.0.1",
-        "--port",
-        String(port)
-      ],
+      command,
+      args,
       {
         cwd: this.folderPath,
         env: environment,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: this.session.isolateProcessGroup && process.platform !== "win32"
       }
     );
     this.process = child;
@@ -791,6 +878,15 @@ export class OpenCodeAppServer {
     if (this.turnActive) {
       throw new Error("Wait for the current OpenCode turn to finish.");
     }
+    if (
+      settings.internetEnabled === false &&
+      process.platform === "linux" &&
+      this.session.isolateProcessGroup
+    ) {
+      throw new Error(
+        "Hosted OpenCode keeps Internet enabled. Disabling it safely requires a separate Linux network bridge for the local OpenCode and Drawsy MCP control planes; Drawsy will not claim that boundary before it exists."
+      );
+    }
     const models = await this.availableModels();
     const nextModel = settings.model
       ? models.find(
@@ -895,12 +991,25 @@ export class OpenCodeAppServer {
     this.baseUrl = null;
     this.openCodeSessionId = null;
     this.partKinds.clear();
-    if (processToStop && !processToStop.killed) {
-      processToStop.kill("SIGTERM");
-      const forceKill = setTimeout(() => {
-        if (!processToStop.killed) processToStop.kill("SIGKILL");
-      }, 1_500);
-      forceKill.unref();
+    if (processToStop && processToStop.pid) {
+      const processGroup =
+        this.session.isolateProcessGroup && process.platform !== "win32"
+          ? -processToStop.pid
+          : null;
+      const signal = (value: NodeJS.Signals) => {
+        try {
+          if (processGroup) process.kill(processGroup, value);
+          else processToStop.kill(value);
+        } catch {
+          // The child may have exited while the session was being closed.
+        }
+      };
+      const exit = new Promise<void>((resolve) => {
+        processToStop.once("exit", () => resolve());
+      });
+      signal("SIGTERM");
+      await Promise.race([exit, sleep(1_500)]);
+      signal("SIGKILL");
     }
     const runtimePath = this.runtimePath;
     this.runtimePath = null;

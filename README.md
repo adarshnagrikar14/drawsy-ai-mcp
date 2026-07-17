@@ -1,6 +1,6 @@
 # Drawsy AI MCP
 
-Surface-scoped Drawsy MCP and Codex app-server bridge. It gives a Codex workspace the current Drawsy surface, explicit connected sources, selected-folder tools, multimodal canvas operations, and isolated live previews—without turning unrelated product data into ambient context.
+Surface-scoped Drawsy MCP and agent-runtime bridge. It gives Codex and OpenCode the current Drawsy surface, explicit connected sources, selected-folder tools, multimodal canvas operations, and isolated live previews—without turning unrelated product data into ambient context.
 
 > **Repository status:** private for now. It is shared directly with OpenAI Build Week judges and may be published after a dedicated security and release review. No license is granted by repository access alone.
 
@@ -10,6 +10,7 @@ Surface-scoped Drawsy MCP and Codex app-server bridge. It gives a Codex workspac
 flowchart LR
   Client["Drawsy web client"] <--> Bridge["Agent bridge"]
   Bridge <--> Codex["Codex app server"]
+  Bridge <--> OpenCode["OpenCode server"]
   Bridge <--> MCP["Surface-scoped Drawsy MCP"]
   MCP <--> Surface["Current canvas or presentation"]
   Bridge --> Folder["Selected workspace folder"]
@@ -28,7 +29,7 @@ This repository was created entirely after the submission window opened on July 
 - **History:** [all commits on `main`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commits/main)
 - **Initial qualifying implementation:** 35 commits and 51 files at the first documentation pass.
 
-Build Week work includes the bridge protocol, Codex app-server lifecycle, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
+Build Week work includes the bridge protocol, Codex and OpenCode app-server lifecycles, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
 
 Codex running GPT-5.6 accelerated architecture review, implementation, official API research, sandbox validation, failure diagnosis, and test/deploy loops. The product owner defined the essential boundaries: the Drawsy MCP is always present, only the current surface is visible, the selected folder is the only workspace root, connected sources are attached explicitly, and previews remain session-local rather than collaboration-synced.
 
@@ -36,9 +37,9 @@ The main product record and complete repository set are documented in [`excal-ai
 
 ## Current guarantees
 
-- **Selected-folder boundary.** Codex uses the selected folder as its single runtime workspace root. Workspace mode permits reads, edits, patches, and commands inside it; read-only mode removes writes.
+- **Selected-folder boundary.** Codex and OpenCode use the selected folder as their single runtime workspace root. Workspace mode permits reads, edits, patches, and commands inside it; read-only mode removes writes.
 - **No approval deadlock.** The bridge uses `approvalPolicy: "never"`; permitted actions proceed and boundary escapes are rejected instead of opening an unusable approval flow.
-- **Internet is explicit and visible.** It is enabled by default in the current UI and can be disabled per session. Browser, Chrome-control, and computer-use plugins remain blocked inside Drawsy.
+- **Internet is explicit and visible.** It is enabled by default. Codex and local macOS OpenCode sessions can disable it; hosted OpenCode refuses that change until its separate Linux network bridge exists, rather than presenting an unenforced boundary. Browser, Chrome-control, and computer-use plugins remain blocked inside Drawsy.
 - **Surface scope.** Canvas and presentation sessions receive only their current visual surface. Kanban and Jira receive their current resource only through a valid resource grant. Neutral pages start with no Drawsy resource context.
 - **Turn-scoped sources.** Only sources tagged in the current message are exposed. The bridge receives signed, short-lived grants—not OAuth tokens or provider refresh credentials.
 - **Provider-native reads.** Mail, Calendar, Drive, Notion, Slack, GitHub, Read AI, Fireflies, and AWS use capability-specific tools. GitHub supports selected repositories, directories, text files, issues, and pull requests without cloning or writing.
@@ -65,7 +66,7 @@ The default local endpoint is `http://127.0.0.1:3031`.
 
 In hosted mode, each session receives a temporary server-side workspace copied from the selected project upload. Visual surfaces may also receive one exclusive preview port from a configured pool. Drawsy's own ports (`3001`, `3002`, `3003`, `3004`, `3020`, and `3031`) are rejected from that pool.
 
-The preview proxy exposes a tokenized HTTPS origin only after the loopback service responds. Closing a session releases the port, stops its Codex process group, removes context, and deletes the temporary workspace. Idle hosted sessions expire after 20 minutes by default; the timeout is configurable from 1 minute to 24 hours.
+The preview proxy exposes a tokenized HTTPS origin only after the loopback service responds. Closing a session releases the port, stops its Codex or OpenCode process group, removes context, and deletes the temporary workspace. Idle hosted sessions expire after 20 minutes by default; the timeout is configurable from 1 minute to 24 hours.
 
 Non-visual surfaces do not reserve preview capacity.
 
@@ -82,7 +83,7 @@ Copy `.env.example` values into the service environment; never commit production
 - `DRAWSY_PREVIEW_PORT_RANGE` — at least five non-reserved ports; default `18000-18099`.
 - `DRAWSY_REMOTE_SESSION_IDLE_MS` — hosted idle timeout; default 20 minutes.
 
-The Docker image includes Node.js 22, Bubblewrap, the compiled bridge, and the Codex CLI. Persistent Codex configuration is loaded separately from ephemeral session workspaces.
+The Docker image includes Node.js 22, Bubblewrap, the compiled bridge, the Codex CLI, and the official OpenCode CLI. OpenCode is pinned to the validated local runtime version so local and hosted sessions use the same server contract. Persistent Codex configuration is loaded separately from ephemeral session workspaces. OpenCode has no persistent login: user-supplied provider keys are held only in the active bridge session and its XDG runtime is ephemeral.
 
 ## Verify
 

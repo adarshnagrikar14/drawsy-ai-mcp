@@ -14,7 +14,7 @@ RUN apt-get update \
   && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && pnpm install --prod --frozen-lockfile
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex opencode-ai@1.17.20
 COPY --from=build /app/dist ./dist
 COPY docker-entrypoint.sh /usr/local/bin/drawsy-mcp-entrypoint
 RUN chmod 755 /usr/local/bin/drawsy-mcp-entrypoint
