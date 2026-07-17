@@ -1158,9 +1158,13 @@ export const createDrawsyBridge = (
             : action === "preview"
             ? await requestCanvas(session, "preview", {
                 previewRequest: previewProxy
-                  ? await previewProxy.attach(session.id, parsedPreview!, () => {
-                      session.touchedAt = Date.now();
-                    })
+                  ? await previewProxy.attach(
+                      session.id,
+                      parsedPreview!,
+                      () => {
+                        session.touchedAt = Date.now();
+                      }
+                    )
                   : parsedPreview!
               })
             : action === "context"
@@ -1653,7 +1657,10 @@ export const createDrawsyBridge = (
           decodeURIComponent(providerKeyMatch[1]!)
         );
         if (!session) return;
-        if (session.engine !== "opencode" || !(session.agent instanceof OpenCodeAppServer)) {
+        if (
+          session.engine !== "opencode" ||
+          !(session.agent instanceof OpenCodeAppServer)
+        ) {
           json(response, 400, {
             error: {
               code: "provider_key_unsupported",
@@ -1663,15 +1670,29 @@ export const createDrawsyBridge = (
           return;
         }
         const body = await readJson(request);
+        const metadata = body.metadata === undefined ? {} : body.metadata;
         if (
-          Object.keys(body).some((key) => key !== "providerId" && key !== "apiKey") ||
+          Object.keys(body).some(
+            (key) =>
+              key !== "providerId" && key !== "apiKey" && key !== "metadata"
+          ) ||
           typeof body.providerId !== "string" ||
-          typeof body.apiKey !== "string"
+          typeof body.apiKey !== "string" ||
+          !isRecord(metadata) ||
+          Object.keys(metadata).length > 16 ||
+          Object.entries(metadata).some(
+            ([key, value]) =>
+              !key ||
+              key.length > 128 ||
+              typeof value !== "string" ||
+              value.length > 16_384
+          )
         ) {
           json(response, 400, {
             error: {
               code: "provider_key_invalid",
-              message: "A provider and API key are required."
+              message:
+                "A provider, API key, and valid provider fields are required."
             }
           });
           return;
@@ -1681,7 +1702,8 @@ export const createDrawsyBridge = (
           200,
           await session.agent.setProviderApiKey({
             providerId: body.providerId,
-            apiKey: body.apiKey
+            apiKey: body.apiKey,
+            metadata: metadata as Record<string, string>
           })
         );
         return;

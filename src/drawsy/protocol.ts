@@ -5,7 +5,11 @@ export const CANVAS_REQUEST_TIMEOUT_MS = 60_000;
 export type JsonObject = Record<string, unknown>;
 
 export type DrawsySurfaceKind =
-  "canvas" | "presentation" | "kanban" | "jira" | "neutral";
+  | "canvas"
+  | "presentation"
+  | "kanban"
+  | "jira"
+  | "neutral";
 
 export const surfaceSupportsLivePreview = (surfaceKind: DrawsySurfaceKind) =>
   surfaceKind === "canvas" || surfaceKind === "presentation";
@@ -109,6 +113,14 @@ export type AgentApiKeyProviderOption = {
   id: string;
   name: string;
   label: string;
+  fields: Array<{
+    key: string;
+    label: string;
+    placeholder?: string;
+    type: "text" | "select";
+    options?: Array<{ label: string; value: string; hint?: string }>;
+    when?: { key: string; op: "eq" | "neq"; value: string };
+  }>;
 };
 
 export type AgentSkillOption = {
@@ -448,9 +460,7 @@ const finiteWithin = (candidate: unknown, min: number, max: number) =>
   candidate >= min &&
   candidate <= max;
 
-export const parseLivePreviewRequest = (
-  value: unknown
-): LivePreviewRequest => {
+export const parseLivePreviewRequest = (value: unknown): LivePreviewRequest => {
   if (
     !isRecord(value) ||
     Object.keys(value).some(
@@ -493,10 +503,8 @@ export const parseLivePreviewRequest = (
   if (
     !optionalString(value.previewId, 128) ||
     !optionalString(value.title, 120) ||
-    (value.x !== undefined &&
-      !finiteWithin(value.x, -1_000_000, 1_000_000)) ||
-    (value.y !== undefined &&
-      !finiteWithin(value.y, -1_000_000, 1_000_000)) ||
+    (value.x !== undefined && !finiteWithin(value.x, -1_000_000, 1_000_000)) ||
+    (value.y !== undefined && !finiteWithin(value.y, -1_000_000, 1_000_000)) ||
     (value.width !== undefined && !finiteWithin(value.width, 360, 4_000)) ||
     (value.height !== undefined && !finiteWithin(value.height, 260, 4_000))
   ) {
