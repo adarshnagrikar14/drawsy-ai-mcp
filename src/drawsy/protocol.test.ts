@@ -19,8 +19,17 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasOperations,
-  parseLivePreviewRequest
+  parseLivePreviewRequest,
+  surfaceSupportsLivePreview
 } from "./protocol.js";
+
+test("only visual canvas surfaces reserve live-preview capacity", () => {
+  assert.equal(surfaceSupportsLivePreview("canvas"), true);
+  assert.equal(surfaceSupportsLivePreview("presentation"), true);
+  assert.equal(surfaceSupportsLivePreview("kanban"), false);
+  assert.equal(surfaceSupportsLivePreview("jira"), false);
+  assert.equal(surfaceSupportsLivePreview("neutral"), false);
+});
 
 test("connector turns require exact, unexpired, matching grants", () => {
   const expiresAt = Date.now() + 60_000;

@@ -7,6 +7,9 @@ export type JsonObject = Record<string, unknown>;
 export type DrawsySurfaceKind =
   "canvas" | "presentation" | "kanban" | "jira" | "neutral";
 
+export const surfaceSupportsLivePreview = (surfaceKind: DrawsySurfaceKind) =>
+  surfaceKind === "canvas" || surfaceKind === "presentation";
+
 export type CanvasSnapshot = {
   canvasId: string;
   canvasName: string;

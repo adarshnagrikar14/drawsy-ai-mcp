@@ -51,7 +51,8 @@ import {
   type CanvasImageReplacement,
   type CanvasOperations,
   type LivePreviewRequest,
-  type DrawsySurfaceKind
+  type DrawsySurfaceKind,
+  surfaceSupportsLivePreview
 } from "./protocol.js";
 import {
   createRemoteSessionWorkspace,
@@ -1365,12 +1366,12 @@ export const createDrawsyBridge = (
         const id = randomUUID();
         const token = randomBytes(32).toString("base64url");
         const internalSecret = randomBytes(32).toString("base64url");
+        const supportsLivePreview = surfaceSupportsLivePreview(surfaceKind);
         const previewPort =
-          previewPorts &&
-          (surfaceKind === "canvas" || surfaceKind === "presentation")
+          previewPorts && supportsLivePreview
             ? await previewPorts.acquire(id)
             : null;
-        if (previewPorts && previewPort === null) {
+        if (previewPorts && supportsLivePreview && previewPort === null) {
           throw new BridgeRequestError(
             503,
             "preview_capacity_exhausted",
