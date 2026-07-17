@@ -112,7 +112,7 @@ test("remote sessions isolate files and proxy a private loopback preview", async
     );
 
     let touched = 0;
-    const attached = proxy.attach(
+    const attached = await proxy.attach(
       "session-one",
       {
         previewId: "preview-one",
@@ -135,8 +135,12 @@ test("remote sessions isolate files and proxy a private loopback preview", async
     assert.equal(touched, 1);
 
     proxy.removeSession("session-one");
+    const expired = await get(gatewayPort, publicUrl.host, "/dashboard");
+    assert.equal(expired.status, 410);
+    assert.match(expired.body, /preview has expired/i);
     assert.equal(
-      (await get(gatewayPort, publicUrl.host, "/dashboard")).status,
+      (await get(gatewayPort, `not-preview.localhost:${gatewayPort}`, "/"))
+        .status,
       404
     );
     await removeRemoteSessionWorkspace(workspace);

@@ -1142,7 +1142,7 @@ export const createDrawsyBridge = (
             : action === "preview"
             ? await requestCanvas(session, "preview", {
                 previewRequest: previewProxy
-                  ? previewProxy.attach(session.id, parsedPreview!, () => {
+                  ? await previewProxy.attach(session.id, parsedPreview!, () => {
                       session.touchedAt = Date.now();
                     })
                   : parsedPreview!

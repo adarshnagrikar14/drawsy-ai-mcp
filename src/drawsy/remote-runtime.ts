@@ -12,6 +12,8 @@ import type { LivePreviewRequest } from "./protocol.js";
 const DEFAULT_REMOTE_IDLE_MS = 20 * 60 * 1000;
 const DEFAULT_PREVIEW_PORT_START = 18_000;
 const DEFAULT_PREVIEW_PORT_END = 18_099;
+const PREVIEW_READY_TIMEOUT_MS = 5_000;
+const PREVIEW_READY_RETRY_MS = 100;
 const RESERVED_DRAWSY_PORTS = new Set([3001, 3002, 3003, 3004, 3020, 3031]);
 const PREVIEW_TOKEN = "previewtoken";
 const HOP_BY_HOP_HEADERS = new Set([
@@ -250,17 +252,57 @@ const writeUpgradeResponse = (socket: Duplex, response: IncomingMessage) => {
   socket.write(`${lines.join("\r\n")}\r\n\r\n`);
 };
 
+const previewResponds = (target: URL) =>
+  new Promise<boolean>((resolve) => {
+    const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = transport(
+      target,
+      { method: "GET", headers: { accept: "text/html,*/*" } },
+      (response) => {
+        response.resume();
+        resolve(true);
+      }
+    );
+    request.setTimeout(750, () => request.destroy());
+    request.once("error", () => resolve(false));
+    request.end();
+  });
+
+const waitForPreview = async (target: URL) => {
+  const deadline = Date.now() + PREVIEW_READY_TIMEOUT_MS;
+  do {
+    if (await previewResponds(target)) return;
+    await new Promise((resolve) => setTimeout(resolve, PREVIEW_READY_RETRY_MS));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `The live preview server at ${target.origin} is not running. Start it successfully before attaching it to the canvas.`
+  );
+};
+
 export class RemotePreviewProxy {
   private readonly byHost = new Map<string, PreviewTarget>();
   private readonly byPreview = new Map<string, PreviewTarget>();
+  private readonly previewHostnamePrefix: string;
+  private readonly previewHostnameSuffix: string;
 
-  constructor(private readonly config: RemoteRuntimeConfig) {}
+  constructor(private readonly config: RemoteRuntimeConfig) {
+    const hostname = new URL(
+      config.previewOriginTemplate.replace("{token}", PREVIEW_TOKEN)
+    ).hostname.toLowerCase();
+    const tokenIndex = hostname.indexOf(PREVIEW_TOKEN);
+    this.previewHostnamePrefix = hostname.slice(0, tokenIndex);
+    this.previewHostnameSuffix = hostname.slice(
+      tokenIndex + PREVIEW_TOKEN.length
+    );
+  }
 
-  attach(
+  async attach(
     sessionId: string,
     request: LivePreviewRequest,
     touch: () => void
-  ): LivePreviewRequest {
+  ): Promise<LivePreviewRequest> {
+    const requestTarget = new URL(request.url);
+    await waitForPreview(requestTarget);
     const previewId = request.previewId || randomBytes(16).toString("hex");
     const key = `${sessionId}:${previewId}`;
     const previous = this.byPreview.get(key);
@@ -272,7 +314,7 @@ export class RemotePreviewProxy {
       sessionId,
       previewId,
       token,
-      target: new URL(request.url),
+      target: requestTarget,
       publicOrigin,
       touch
     };
@@ -294,7 +336,17 @@ export class RemotePreviewProxy {
 
   handleHttp(request: IncomingMessage, response: ServerResponse) {
     const preview = this.lookup(request);
-    if (!preview) return false;
+    if (!preview) {
+      if (!this.isPreviewHost(request)) return false;
+      response.writeHead(410, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end(
+        "This live preview has expired. Ask Drawsy to start and attach it again."
+      );
+      return true;
+    }
     preview.touch();
     const target = this.targetUrl(preview, request.url || "/");
     const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
@@ -378,6 +430,26 @@ export class RemotePreviewProxy {
   private lookup(request: IncomingMessage) {
     const host = request.headers.host?.toLowerCase();
     return host ? this.byHost.get(host) : undefined;
+  }
+
+  private isPreviewHost(request: IncomingMessage) {
+    const host = request.headers.host;
+    if (!host) return false;
+    let hostname: string;
+    try {
+      hostname = new URL(`http://${host}`).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    const tokenLength =
+      hostname.length -
+      this.previewHostnamePrefix.length -
+      this.previewHostnameSuffix.length;
+    return (
+      tokenLength > 0 &&
+      hostname.startsWith(this.previewHostnamePrefix) &&
+      hostname.endsWith(this.previewHostnameSuffix)
+    );
   }
 
   private targetUrl(preview: PreviewTarget, requestUrl: string) {
