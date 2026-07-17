@@ -530,10 +530,59 @@ export class OpenCodeAppServer {
   }
 
   private async availableModels(): Promise<AvailableModel[]> {
-    const config = await this.request<JsonObject>("/config/providers");
+    const [config, catalog] = await Promise.all([
+      this.request<JsonObject>("/config/providers"),
+      this.apiKeyProviderIds.size
+        ? this.request<JsonObject>("/provider")
+        : Promise.resolve(null)
+    ]);
     const defaults = toRecord(config.default);
     const providers = Array.isArray(config.providers) ? config.providers : [];
     const models: AvailableModel[] = [];
+    const modelKeys = new Set<string>();
+    const addModel = (
+      providerId: string,
+      providerName: string,
+      modelValue: unknown,
+      isDefault: boolean
+    ) => {
+      const model = toRecord(modelValue);
+      const modelId = stringValue(model.id);
+      const modelProviderId = stringValue(model.providerID) || providerId;
+      const capabilities = toRecord(model.capabilities);
+      const cost = toRecord(model.cost);
+      const isFree =
+        modelProviderId === "opencode" &&
+        cost.input === 0 &&
+        cost.output === 0;
+      const isPersonal = this.apiKeyProviderIds.has(modelProviderId);
+      const key = `${modelProviderId}:${modelId}`;
+      if (
+        !modelId ||
+        model.status !== "active" ||
+        capabilities.toolcall !== true ||
+        (!isFree && !isPersonal) ||
+        modelKeys.has(key)
+      ) {
+        return;
+      }
+      modelKeys.add(key);
+      const variants = toRecord(model.variants);
+      const efforts = Object.entries(variants).flatMap(([id, value]) => {
+        const effort = stringValue(toRecord(value).reasoningEffort);
+        return effort ? [{ id, description: `${effort} reasoning` }] : [];
+      });
+      models.push({
+        providerId: modelProviderId,
+        providerName,
+        modelId,
+        displayName: stringValue(model.name) || modelId,
+        efforts,
+        isFree,
+        supportsImageInput: toRecord(capabilities.input).image === true,
+        isDefault
+      });
+    };
     for (const providerValue of providers) {
       const provider = toRecord(providerValue);
       const providerId = stringValue(provider.id);
@@ -541,41 +590,33 @@ export class OpenCodeAppServer {
       const providerName =
         stringValue(provider.name) || humanizeProviderId(providerId);
       this.providerNames.set(providerId, providerName);
-      const providerModels = toRecord(provider.models);
-      for (const modelValue of Object.values(providerModels)) {
+      for (const modelValue of Object.values(toRecord(provider.models))) {
         const model = toRecord(modelValue);
-        const modelId = stringValue(model.id);
         const modelProviderId = stringValue(model.providerID) || providerId;
-        const capabilities = toRecord(model.capabilities);
-        const cost = toRecord(model.cost);
-        const isFree =
-          modelProviderId === "opencode" &&
-          cost.input === 0 &&
-          cost.output === 0;
-        const isPersonal = this.apiKeyProviderIds.has(modelProviderId);
-        if (
-          !modelId ||
-          model.status !== "active" ||
-          capabilities.toolcall !== true ||
-          (!isFree && !isPersonal)
-        ) {
-          continue;
-        }
-        const variants = toRecord(model.variants);
-        const efforts = Object.entries(variants).flatMap(([id, value]) => {
-          const effort = stringValue(toRecord(value).reasoningEffort);
-          return effort ? [{ id, description: `${effort} reasoning` }] : [];
-        });
-        models.push({
-          providerId: modelProviderId,
+        addModel(
+          providerId,
           providerName,
-          modelId,
-          displayName: stringValue(model.name) || modelId,
-          efforts,
-          isFree,
-          supportsImageInput: toRecord(capabilities.input).image === true,
-          isDefault: defaults[modelProviderId] === modelId
-        });
+          model,
+          defaults[modelProviderId] === stringValue(model.id)
+        );
+      }
+    }
+    const catalogProviders = catalog
+      ? Array.isArray(catalog.all)
+        ? catalog.all
+        : Array.isArray(catalog.providers)
+        ? catalog.providers
+        : []
+      : [];
+    for (const providerValue of catalogProviders) {
+      const provider = toRecord(providerValue);
+      const providerId = stringValue(provider.id);
+      if (!providerId || !this.apiKeyProviderIds.has(providerId)) continue;
+      const providerName =
+        stringValue(provider.name) || humanizeProviderId(providerId);
+      this.providerNames.set(providerId, providerName);
+      for (const modelValue of Object.values(toRecord(provider.models))) {
+        addModel(providerId, providerName, modelValue, false);
       }
     }
     return models.sort((left, right) => {
