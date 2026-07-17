@@ -29,7 +29,7 @@ This repository was created entirely after the submission window opened on July 
 - **History:** [all commits on `main`](https://github.com/adarshnagrikar14/drawsy-ai-mcp/commits/main)
 - **Initial qualifying implementation:** 35 commits and 51 files at the first documentation pass.
 
-Build Week work includes the bridge protocol, Codex and OpenCode app-server lifecycles, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
+Build Week work includes the bridge protocol, Codex and OpenCode runtime lifecycles, model-provider selection, session-only provider keys with live tool-capable model discovery, surface-aware tools, multimodal canvas capture, real image insertion/replacement, source and first-party resource grants, `DRAW.md` access, isolated live previews, remote workspaces, dynamic port allocation, session cleanup, and focused protocol/runtime tests.
 
 Codex running GPT-5.6 accelerated architecture review, implementation, official API research, sandbox validation, failure diagnosis, and test/deploy loops. The product owner defined the essential boundaries: the Drawsy MCP is always present, only the current surface is visible, the selected folder is the only workspace root, connected sources are attached explicitly, and previews remain session-local rather than collaboration-synced.
 
@@ -47,6 +47,8 @@ The main product record and complete repository set are documented in [`excal-ai
 - **Editable canvas operations.** Targeted reads, upserts, deletes, raster insertion/replacement, and selection/region capture preserve normal Excalidraw elements. Existing elements are not deleted by omission.
 - **Multimodal context.** A capture combines the rendered annotated region with pristine selected raster sources. Temporary files live below the selected folder's ignored `.drawsy/context` directory and are removed with the session.
 - **Real image transport.** Generated files are MIME-sniffed, size-limited, content-hashed, and transferred with their Excalidraw file records instead of becoming placeholders.
+- **One agent contract, two runtimes.** Codex app-server and the official OpenCode server receive the same selected-folder boundary, active-surface tools, Drawsy MCP, grants, and preview lifecycle. Switching models starts a fresh runtime rather than carrying hidden context across.
+- **Session-only provider keys.** OpenCode's free model catalogue is read from its running configuration. When a provider key is added, the bridge fetches that provider's live catalogue and exposes only active, tool-capable models for the owning Drawsy AI session. The key is kept in bridge memory and that session's ephemeral OpenCode XDG runtime—not in a database, browser store, or workspace—and is removed on session close or bridge restart.
 
 ## Local and hosted modes
 
@@ -83,7 +85,7 @@ Copy `.env.example` values into the service environment; never commit production
 - `DRAWSY_PREVIEW_PORT_RANGE` — at least five non-reserved ports; default `18000-18099`.
 - `DRAWSY_REMOTE_SESSION_IDLE_MS` — hosted idle timeout; default 20 minutes.
 
-The Docker image includes Node.js 22, Bubblewrap, the compiled bridge, the Codex CLI, and the official OpenCode CLI. OpenCode is pinned to the validated local runtime version so local and hosted sessions use the same server contract. Persistent Codex configuration is loaded separately from ephemeral session workspaces. OpenCode has no persistent login: user-supplied provider keys are held only in the active bridge session and its XDG runtime is ephemeral.
+The Docker image includes Node.js 22, Bubblewrap, the compiled bridge, the Codex CLI, and the official OpenCode CLI. OpenCode is pinned to the validated local runtime version so local and hosted sessions use the same server contract. Persistent Codex configuration is loaded separately from ephemeral session workspaces. OpenCode has no persistent login: a user-supplied provider key exists only in its active bridge session and ephemeral XDG runtime, while model options are refreshed from the running provider catalogue.
 
 ## Verify
 
