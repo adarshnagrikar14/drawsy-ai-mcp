@@ -12,6 +12,7 @@ import type { LivePreviewRequest } from "./protocol.js";
 const DEFAULT_REMOTE_IDLE_MS = 20 * 60 * 1000;
 const DEFAULT_PREVIEW_PORT_START = 18_000;
 const DEFAULT_PREVIEW_PORT_END = 18_099;
+const RESERVED_DRAWSY_PORTS = new Set([3001, 3002, 3003, 3004, 3020, 3031]);
 const PREVIEW_TOKEN = "previewtoken";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -112,10 +113,13 @@ export const readRemoteRuntimeConfig = (): RemoteRuntimeConfig | null => {
     !Number.isInteger(previewPortEnd) ||
     previewPortStart < 1024 ||
     previewPortEnd > 65_535 ||
-    previewPortEnd - previewPortStart + 1 < 5
+    previewPortEnd - previewPortStart + 1 < 5 ||
+    [...RESERVED_DRAWSY_PORTS].some(
+      (port) => port >= previewPortStart && port <= previewPortEnd
+    )
   ) {
     throw new Error(
-      "DRAWSY_PREVIEW_PORT_RANGE must be a range of at least five ports between 1024 and 65535."
+      "DRAWSY_PREVIEW_PORT_RANGE must provide at least five ports between 1024 and 65535 without overlapping Drawsy service ports."
     );
   }
   return {

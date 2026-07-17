@@ -389,9 +389,15 @@ export const createDrawsyBridge = (
 
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
-    previewPorts?.release(session.id);
     previewProxy?.removeSession(session.id);
     session.codex.close();
+    if (previewPorts) {
+      const releasePort = setTimeout(
+        () => previewPorts.release(session.id),
+        2_000
+      );
+      releasePort.unref();
+    }
     for (const pending of session.canvasPending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error("Drawsy session closed."));
