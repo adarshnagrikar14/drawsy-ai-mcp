@@ -41,6 +41,8 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
         ? { started: "Reading current canvas", completed: "Canvas read" }
         : item.tool === "apply_canvas_changes"
         ? { started: "Updating canvas", completed: "Canvas updated" }
+        : item.tool === "inspect_current_canvas_layout"
+        ? { started: "Inspecting canvas layout", completed: "Layout checked" }
         : item.tool === "add_image_from_file"
         ? { started: "Adding image to canvas", completed: "Image added" }
         : item.tool === "capture_canvas_context"
@@ -389,6 +391,10 @@ export const getDeveloperInstructions = (
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
 - Read it before changing it. Use apply_canvas_changes for targeted upserts/deletions.
+- Always apply canvas work progressively: call apply_canvas_changes as soon as each coherent change is ready, rather than waiting to submit the whole result at the end. A small edit can complete in one quick call; for a larger composition, keep adding structural anchors, connections, labels, and annotations in later targeted calls until it is complete. Each successful apply is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.
+- After each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
+- For a relationship-rich diagram, do one final rendered capture review after the geometry check. Bounds alone cannot tell whether a connector communicates the intended relationship: verify that each important connector has an intentional source and target, its label belongs to that relationship, the route is visually unambiguous, and labels remain readable against the active theme. Repair only findings relevant to the requested diagram; do not invent domain rules or alter deliberate visual choices.
+- Use Excalidraw-native text geometry. Text that belongs inside a shape must be bound to that container and fit within it; standalone labels must leave clear space around nearby nodes and connectors. Route arrows around unrelated nodes rather than through them.
 - When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
 - For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
 - For an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.

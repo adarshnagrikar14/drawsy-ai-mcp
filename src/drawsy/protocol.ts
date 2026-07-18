@@ -28,6 +28,22 @@ export type CanvasOperations = {
   files: CanvasFile[];
 };
 
+export type CanvasLayoutIssue = {
+  kind:
+    | "overlap"
+    | "text_overflow"
+    | "unbound_text"
+    | "connector_collision";
+  elementIds: string[];
+  message: string;
+};
+
+export type CanvasLayoutReport = {
+  canvasId: string;
+  elementCount: number;
+  issues: CanvasLayoutIssue[];
+};
+
 export type CanvasFile = {
   id: string;
   mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
@@ -228,7 +244,13 @@ export type BridgeEvent =
       type: "canvas.request";
       data: {
         requestId: string;
-        action: "read" | "apply" | "capture" | "replaceImage" | "preview";
+        action:
+          | "read"
+          | "apply"
+          | "inspect"
+          | "capture"
+          | "replaceImage"
+          | "preview";
         canvasId: string;
         operations?: CanvasOperations;
         contextRequest?: CanvasContextRequest;

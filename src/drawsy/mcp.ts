@@ -40,7 +40,14 @@ if (
 }
 
 const callBridge = async (
-  action: "read" | "apply" | "image" | "context" | "replace-image" | "preview",
+  action:
+    | "read"
+    | "apply"
+    | "inspect"
+    | "image"
+    | "context"
+    | "replace-image"
+    | "preview",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -257,7 +264,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "apply_canvas_changes",
     {
       description:
-        "Apply element upserts and deletions to the attached Drawsy canvas. Read the canvas first. Omitted elements remain unchanged.",
+        "Apply a targeted change to the attached Drawsy canvas. Read the canvas first. Every successful call is visible on the live canvas immediately, and omitted elements remain unchanged. Apply work progressively as soon as each coherent change is ready: a small edit can be one quick call; a larger result should continue through structural anchors, connections, labels, and annotations instead of waiting to submit the whole composition at the end. Read the canvas again whenever the rendered result informs the next placement.",
       inputSchema: z.object({
         upsertElements: z
           .array(z.record(z.string(), z.unknown()))
@@ -305,6 +312,38 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
                 error instanceof Error
                   ? error.message
                   : "Invalid canvas change."
+            }
+          ]
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "inspect_current_canvas_layout",
+    {
+      description:
+        "Inspect the rendered current canvas for potential geometry problems: text that overflows or is not bound to its container, overlapping diagram nodes, and connectors crossing unrelated nodes. This is advisory visual evidence, not an automatic rewrite. Use it after visual passes and resolve the relevant findings before claiming a diagram is complete.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false }
+    },
+    async () => {
+      try {
+        return {
+          content: [
+            { type: "text", text: await callBridge("inspect") }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Canvas layout could not be inspected."
             }
           ]
         };

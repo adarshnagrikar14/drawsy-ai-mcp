@@ -575,6 +575,22 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(thread.params.developerInstructions, /DRAW\.md/);
     assert.match(
       thread.params.developerInstructions,
+      /Always apply canvas work progressively/
+    );
+    assert.match(
+      thread.params.developerInstructions,
+      /never guess from a stale snapshot/
+    );
+    assert.match(
+      thread.params.developerInstructions,
+      /relationship-rich diagram/
+    );
+    assert.match(
+      thread.params.developerInstructions,
+      /do not invent domain rules/
+    );
+    assert.match(
+      thread.params.developerInstructions,
       /This surface is a presentation/
     );
     assert.match(

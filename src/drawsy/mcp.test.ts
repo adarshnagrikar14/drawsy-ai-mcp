@@ -197,6 +197,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "capture_canvas_context",
       "create_kanban_card",
       "create_kanban_checklist_item",
+      "inspect_current_canvas_layout",
       "link_current_canvas_to_kanban_card",
       "list_aws_cloudformation_stacks",
       "list_aws_regions",
@@ -248,12 +249,23 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       )?.enum,
       ["mail", "calendar", "drive", "notion", "slack", "github"]
     );
+    const applyTool = tools.tools.find(
+      (tool) => tool.name === "apply_canvas_changes"
+    );
+    assert.match(applyTool?.description || "", /live canvas immediately/);
+    assert.match(applyTool?.description || "", /Apply work progressively/);
 
     const read = await client.callTool({
       name: "read_current_canvas",
       arguments: {}
     });
     assert.match(JSON.stringify(read.content), /canvas-1/);
+    const layout = await client.callTool({
+      name: "inspect_current_canvas_layout",
+      arguments: {}
+    });
+    assert.equal(layout.isError, undefined);
+    appliedBody = "";
     const apply = await client.callTool({
       name: "apply_canvas_changes",
       arguments: {

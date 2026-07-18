@@ -955,7 +955,13 @@ export const createDrawsyBridge = (
 
   const requestCanvas = (
     session: Session,
-    action: "read" | "apply" | "capture" | "replaceImage" | "preview",
+    action:
+      | "read"
+      | "apply"
+      | "inspect"
+      | "capture"
+      | "replaceImage"
+      | "preview",
     options: {
       operations?: CanvasOperations;
       contextRequest?: CanvasContextRequest;
@@ -1121,7 +1127,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|image|context|replace-image|preview)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|inspect|image|context|replace-image|preview)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -1133,6 +1139,7 @@ export const createDrawsyBridge = (
         const action = internalCanvas[2] as
           | "read"
           | "apply"
+          | "inspect"
           | "image"
           | "context"
           | "replace-image"
