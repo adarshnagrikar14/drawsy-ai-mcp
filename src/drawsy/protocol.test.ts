@@ -31,11 +31,9 @@ test("only visual canvas surfaces reserve live-preview capacity", () => {
   assert.equal(surfaceSupportsLivePreview("neutral"), false);
 });
 
-test("conversation bridge refuses shared-network binding", () => {
-  assert.throws(
-    () => createDrawsyBridge({ host: "0.0.0.0" }),
-    /must bind to loopback/
-  );
+test("hosted bridge binding keeps internal callbacks on loopback", () => {
+  const bridge = createDrawsyBridge({ host: "0.0.0.0" });
+  assert.match(bridge.address, /^http:\/\/127\.0\.0\.1:/);
 });
 
 test("connector turns require exact, unexpired, matching grants", () => {
@@ -293,6 +291,7 @@ const log = process.env.DRAWSY_TEST_REQUEST_LOG;
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let materialized = false;
 let wasResumed = false;
+process.on("SIGTERM", () => process.exit(0));
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const message = JSON.parse(line);
   if (message.id) await appendFile(log, JSON.stringify(message) + "\\n");
@@ -1029,6 +1028,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         conversationId: generalConversationId
       })
     }).then((response) => response.json())) as { id: string; token: string };
+    const generalHistoryResponse = await fetch(
+      `${bridge.address}/v1/conversations?scope=general`,
+      { headers: { origin } }
+    );
+    assert.equal(generalHistoryResponse.status, 200);
+    assert.deepEqual(
+      (await generalHistoryResponse.json()).conversations,
+      [],
+      "non-canvas surfaces must not expose resumable history"
+    );
     const movedGeneralResponse = await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
       headers,
@@ -1100,7 +1109,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       canvasId: "canvas-concurrent",
       canvasName: "Concurrent canvas",
       surfaceKind: "canvas",
-      conversationId: concurrentConversationId
+      conversationId: concurrentConversationId,
+      clientId: "5b36db28-2712-4f20-960c-8ec880adbb41"
     });
     const concurrentResponses = await Promise.all(
       [0, 1].map(() =>
@@ -1124,6 +1134,23 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       startsBeforeConcurrentResume + 1,
       "simultaneous resumes must share one native runtime"
     );
+    const secondTabResponse = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: picked.selectionId,
+        canvasId: "canvas-concurrent",
+        canvasName: "Concurrent canvas",
+        surfaceKind: "canvas",
+        conversationId: concurrentConversationId,
+        clientId: "1196680d-a019-413f-af0d-5fa4f103e880"
+      })
+    });
+    assert.equal(secondTabResponse.status, 409);
+    assert.match(
+      (await secondTabResponse.json()).error.message,
+      /already open in another tab/i
+    );
     const currentConcurrentSession =
       concurrentSessions[concurrentResponses.findIndex(
         (response) => response.status === 200
@@ -1139,6 +1166,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }
     );
     assert.equal(closeConcurrentResponse.status, 204);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const healthAfterSessionClose = await fetch(`${bridge.address}/health`);
+    assert.equal(
+      healthAfterSessionClose.status,
+      200,
+      "closing one Codex session must not stop the shared bridge"
+    );
 
     await reader.cancel();
     const closeResponse = await fetch(

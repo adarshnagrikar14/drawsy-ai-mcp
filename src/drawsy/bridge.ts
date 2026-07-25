@@ -152,6 +152,7 @@ type StoredContextCapture = {
 type Session = {
   id: string;
   conversationId: string | null;
+  clientId: string | null;
   token: string;
   internalSecret: string;
   canvasId: string | null;
@@ -400,11 +401,6 @@ export const createDrawsyBridge = (
 ) => {
   const port = options.port ?? Number(process.env.PORT || 3031);
   const host = options.host ?? "127.0.0.1";
-  if (!["127.0.0.1", "::1", "localhost"].includes(host)) {
-    throw new Error(
-      "Drawsy AI conversation history is single-user local state. The bridge must bind to loopback until an authenticated local-companion transport exists."
-    );
-  }
   const allowedOrigins = new Set(
     options.allowedOrigins ??
       (
@@ -1388,6 +1384,10 @@ export const createDrawsyBridge = (
           });
           return;
         }
+        if (scope === "general") {
+          json(response, 200, { conversations: [] });
+          return;
+        }
         json(response, 200, {
           conversations: await localConversations.list(scope, canvasId)
         });
@@ -1465,6 +1465,13 @@ export const createDrawsyBridge = (
             body.conversationId
           )
             ? body.conversationId
+            : null;
+        const clientId =
+          typeof body.clientId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            body.clientId
+          )
+            ? body.clientId
             : null;
         const engine = body.engine === undefined ? "codex" : body.engine;
         const surfaceKind = body.surfaceKind ?? "canvas";
@@ -1574,6 +1581,16 @@ export const createDrawsyBridge = (
             ? conversationSessions.get(conversationId)
             : null;
           if (existingConversationSession) {
+            if (existingConversationSession.clientId !== clientId) {
+              json(response, 409, {
+                error: {
+                  code: "conversation_active_elsewhere",
+                  message:
+                    "This chat is already open in another tab. Close it there, then retry here."
+                }
+              });
+              return;
+            }
             if (existingConversationSession.engine !== engine) {
               json(response, 409, {
                 error: {
@@ -1790,6 +1807,7 @@ export const createDrawsyBridge = (
           const session: Session = {
             id,
             conversationId,
+            clientId,
             token,
             internalSecret,
             canvasId: canvasId || null,
