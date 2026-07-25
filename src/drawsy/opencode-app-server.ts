@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -34,6 +33,8 @@ type OpenCodeSessionConfig = {
   surfaceName: string;
   isolateProcessGroup: boolean;
   previewPort: number | null;
+  runtimePath: string;
+  nativeSessionId: string | null;
 };
 
 type AvailableModel = {
@@ -348,12 +349,16 @@ export class OpenCodeAppServer {
   private turnActive = false;
   private closed = false;
   private lastProcessError = "";
+  private resumeOpenCodeSessionId: string | null;
+  private resumedNativeSession = false;
 
   private constructor(
     private readonly folderPath: string,
     private readonly session: OpenCodeSessionConfig,
     private readonly emit: (event: BridgeEvent) => void
-  ) {}
+  ) {
+    this.resumeOpenCodeSessionId = session.nativeSessionId;
+  }
 
   static async start(
     folderPath: string,
@@ -377,6 +382,46 @@ export class OpenCodeAppServer {
     return this.agentMetadata;
   }
 
+  get nativeSessionId() {
+    return this.openCodeSessionId;
+  }
+
+  get resumed() {
+    return this.resumedNativeSession;
+  }
+
+  async getConversationMessages() {
+    if (!this.openCodeSessionId) return [];
+    const response = await this.request<unknown>(
+      `/session/${encodeURIComponent(this.openCodeSessionId)}/message`
+    );
+    const entries = Array.isArray(response)
+      ? response
+      : Array.isArray(toRecord(response).data)
+      ? toRecord(response).data as unknown[]
+      : [];
+    return entries.flatMap((entry) => {
+      const message = toRecord(entry);
+      const info = toRecord(message.info);
+      const role = stringValue(info.role) || stringValue(message.role);
+      const id = stringValue(info.id) || stringValue(message.id);
+      const parts = Array.isArray(message.parts)
+        ? message.parts
+        : Array.isArray(toRecord(message.parts).data)
+        ? toRecord(message.parts).data as unknown[]
+        : [];
+      const text = parts
+        .map(toRecord)
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n")
+        .trim();
+      return id && text && (role === "user" || role === "assistant")
+        ? [{ id, role, text }]
+        : [];
+    });
+  }
+
   private async initialize() {
     if (process.platform !== "darwin" && process.platform !== "linux") {
       throw new Error(
@@ -387,8 +432,12 @@ export class OpenCodeAppServer {
   }
 
   private async startRuntime() {
-    this.runtimePath = await realpath(
-      await mkdtemp(path.join(tmpdir(), "drawsy-opencode-"))
+    await mkdir(this.session.runtimePath, { recursive: true });
+    this.runtimePath = await realpath(this.session.runtimePath);
+    await Promise.all(
+      ["config", "cache", "tmp"].map((name) =>
+        rm(path.join(this.runtimePath!, name), { recursive: true, force: true })
+      )
     );
     await Promise.all(
       ["data", "config", "cache", "state", "tmp"].map((name) =>
@@ -471,7 +520,10 @@ export class OpenCodeAppServer {
         "OpenCode has no active free tool-capable model right now."
       );
     }
-    await this.createOpenCodeSession();
+    this.resumedNativeSession = await this.restoreOpenCodeSession();
+    if (!this.resumedNativeSession) {
+      await this.createOpenCodeSession();
+    }
     await this.attachDrawsyMcp();
     this.agentMetadata = this.metadataFromModel(this.currentModel);
     this.eventsAbort = new AbortController();
@@ -730,6 +782,22 @@ export class OpenCodeAppServer {
     const id = stringValue(session.id);
     if (!id) throw new Error("OpenCode did not create a session.");
     this.openCodeSessionId = id;
+    this.resumeOpenCodeSessionId = id;
+  }
+
+  private async restoreOpenCodeSession() {
+    if (!this.resumeOpenCodeSessionId) return false;
+    try {
+      const session = await this.request<JsonObject>(
+        `/session/${encodeURIComponent(this.resumeOpenCodeSessionId)}`
+      );
+      const id = stringValue(session.id);
+      if (!id || id !== this.resumeOpenCodeSessionId) return false;
+      this.openCodeSessionId = id;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async attachDrawsyMcp() {
@@ -956,13 +1024,14 @@ export class OpenCodeAppServer {
     ) {
       throw new Error("That reasoning level is not available for this model.");
     }
+    const nextAccessMode = settings.accessMode ?? this.accessMode;
+    const nextInternetEnabled =
+      settings.internetEnabled ?? this.internetEnabled;
     const mustRestart =
-      settings.accessMode !== undefined ||
-      settings.internetEnabled !== undefined ||
-      nextModel.providerId !== this.currentModel?.providerId ||
-      nextModel.modelId !== this.currentModel?.modelId;
-    this.accessMode = settings.accessMode ?? this.accessMode;
-    this.internetEnabled = settings.internetEnabled ?? this.internetEnabled;
+      nextAccessMode !== this.accessMode ||
+      nextInternetEnabled !== this.internetEnabled;
+    this.accessMode = nextAccessMode;
+    this.internetEnabled = nextInternetEnabled;
     this.currentModel = nextModel;
     this.agentMetadata = {
       ...this.metadataFromModel(nextModel),
@@ -1038,6 +1107,8 @@ export class OpenCodeAppServer {
     const processToStop = this.process;
     this.process = null;
     this.baseUrl = null;
+    this.resumeOpenCodeSessionId =
+      this.openCodeSessionId || this.resumeOpenCodeSessionId;
     this.openCodeSessionId = null;
     this.partKinds.clear();
     if (processToStop && processToStop.pid) {
@@ -1062,7 +1133,13 @@ export class OpenCodeAppServer {
     }
     const runtimePath = this.runtimePath;
     this.runtimePath = null;
-    if (runtimePath) await rm(runtimePath, { recursive: true, force: true });
+    if (runtimePath) {
+      await Promise.all(
+        ["config", "cache", "tmp"].map((name) =>
+          rm(path.join(runtimePath, name), { recursive: true, force: true })
+        )
+      );
+    }
   }
 
   close() {

@@ -21,6 +21,37 @@ import type {
 import { isRecord } from "./protocol.js";
 import { resolveCodexBinary } from "./codex-binary.js";
 
+class CodexRpcError extends Error {
+  readonly code: number | string | null;
+
+  constructor(value: unknown) {
+    const error = isRecord(value) ? value : {};
+    const message =
+      typeof error.message === "string"
+        ? error.message
+        : "Codex app-server request failed.";
+    super(message);
+    this.name = "CodexRpcError";
+    this.code =
+      typeof error.code === "number" || typeof error.code === "string"
+        ? error.code
+        : null;
+  }
+}
+
+const isCodexInvalidRequest = (error: unknown): error is CodexRpcError =>
+  error instanceof CodexRpcError && error.code === -32600;
+
+export const isCodexThreadMissingError = (error: unknown) =>
+  isCodexInvalidRequest(error) &&
+  /no rollout found for thread id/i.test(error.message);
+
+const isCodexThreadUnmaterializedError = (error: unknown) =>
+  isCodexInvalidRequest(error) &&
+  /is not materialized yet; includeTurns is unavailable before first user message/i.test(
+    error.message
+  );
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -453,6 +484,8 @@ export class CodexAppServer {
   private internetEnabled = true;
   private lastControls: AgentControls | null = null;
   private threadBaseConfig: JsonObject | null = null;
+  private closed = false;
+  private failureReported = false;
   private resolveDrawsyMcp!: () => void;
   private rejectDrawsyMcp!: (error: Error) => void;
   private readonly drawsyMcpReady = new Promise<void>((resolve, reject) => {
@@ -471,6 +504,7 @@ export class CodexAppServer {
       surfaceName: string;
       isolateProcessGroup: boolean;
       previewPort: number | null;
+      nativeThreadId: string | null;
     },
     private readonly emit: (event: BridgeEvent) => void,
     private readonly registerGeneratedImage: (image: {
@@ -529,16 +563,14 @@ export class CodexAppServer {
         console.error(`[codex:${this.session.id}] ${text}`);
       }
     });
+    this.process.on("error", (error) => this.handleProcessFailure(error));
+    this.process.stdin.on("error", (error) =>
+      this.handleProcessFailure(error)
+    );
     this.process.on("exit", (code) => {
-      const exitError = new Error(
-        `Codex app-server exited (${code ?? "signal"}).`
+      this.handleProcessFailure(
+        new Error(`Codex app-server exited (${code ?? "signal"}).`)
       );
-      this.rejectDrawsyMcp(exitError);
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(exitError);
-      }
-      this.pending.clear();
     });
   }
 
@@ -553,6 +585,7 @@ export class CodexAppServer {
       surfaceName: string;
       isolateProcessGroup: boolean;
       previewPort: number | null;
+      nativeThreadId: string | null;
     },
     emit: (event: BridgeEvent) => void,
     registerGeneratedImage: (image: {
@@ -581,6 +614,57 @@ export class CodexAppServer {
       throw new Error("Codex metadata is not ready.");
     }
     return this.agentMetadata;
+  }
+
+  get nativeSessionId() {
+    return this.threadId;
+  }
+
+  async getConversationMessages(): Promise<
+    Array<{ id: string; role: "user" | "assistant"; text: string }>
+  > {
+    if (!this.threadId) return [];
+    let response: JsonObject;
+    try {
+      response = (await this.request("thread/read", {
+        threadId: this.threadId,
+        includeTurns: true
+      })) as JsonObject;
+    } catch (error) {
+      if (isCodexThreadUnmaterializedError(error)) return [];
+      throw error;
+    }
+    const thread = isRecord(response.thread) ? response.thread : {};
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    return turns.flatMap<{
+      id: string;
+      role: "user" | "assistant";
+      text: string;
+    }>((turn) => {
+      if (!isRecord(turn) || !Array.isArray(turn.items)) return [];
+      return turn.items.flatMap<{
+        id: string;
+        role: "user" | "assistant";
+        text: string;
+      }>((item) => {
+        if (!isRecord(item) || typeof item.id !== "string") return [];
+        if (item.type === "agentMessage" && typeof item.text === "string") {
+          return item.text.trim()
+            ? [{ id: item.id, role: "assistant" as const, text: item.text }]
+            : [];
+        }
+        if (item.type !== "userMessage" || !Array.isArray(item.content)) {
+          return [];
+        }
+        const text = item.content
+          .filter(isRecord)
+          .filter((entry) => entry.type === "text" && typeof entry.text === "string")
+          .map((entry) => entry.text as string)
+          .at(-1)
+          ?.trim();
+        return text ? [{ id: item.id, role: "user" as const, text }] : [];
+      });
+    });
   }
 
   private async initialize() {
@@ -642,7 +726,11 @@ export class CodexAppServer {
         }
       }
     };
-    await this.startAgentThread({ internetEnabled: true, waitForMcp: true });
+    await this.startAgentThread({
+      internetEnabled: true,
+      waitForMcp: true,
+      nativeThreadId: this.session.nativeThreadId
+    });
   }
 
   private async startAgentThread(options: {
@@ -650,17 +738,17 @@ export class CodexAppServer {
     model?: string;
     effort?: string | null;
     waitForMcp?: boolean;
+    nativeThreadId?: string | null;
   }) {
     if (!this.threadBaseConfig) {
       throw new Error("Codex thread configuration is not ready.");
     }
-    const thread = (await this.request("thread/start", {
+    const threadInput = {
       ...(options.model ? { model: options.model } : {}),
       cwd: this.folderPath,
       permissions: ":workspace",
       runtimeWorkspaceRoots: [this.folderPath],
       approvalPolicy: "never",
-      ephemeral: true,
       developerInstructions: getDeveloperInstructions(
         this.session.surfaceKind,
         this.session.previewPort
@@ -685,7 +773,21 @@ export class CodexAppServer {
         web_search: options.internetEnabled ? "live" : "disabled",
         ...(options.effort ? { model_reasoning_effort: options.effort } : {})
       }
-    })) as JsonObject;
+    };
+    const thread = (await this.request(
+      options.nativeThreadId ? "thread/resume" : "thread/start",
+      options.nativeThreadId
+        ? {
+            ...threadInput,
+            threadId: options.nativeThreadId,
+            initialTurnsPage: {
+              limit: 100,
+              sortDirection: "asc",
+              itemsView: "full"
+            }
+          }
+        : { ...threadInput, ephemeral: false }
+    )) as JsonObject;
     const threadData = isRecord(thread.thread) ? thread.thread : {};
     if (typeof threadData.id !== "string") {
       throw new Error("Codex did not return a thread id.");
@@ -1107,7 +1209,8 @@ export class CodexAppServer {
       await this.startAgentThread({
         internetEnabled: nextInternet,
         model: selectedModel?.model || this.agentMetadata.model,
-        effort: settings.effort || this.agentMetadata.reasoningEffort
+        effort: settings.effort || this.agentMetadata.reasoningEffort,
+        nativeThreadId: previousThreadId
       });
     }
     try {
@@ -1152,6 +1255,8 @@ export class CodexAppServer {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
     const pid = this.process.pid;
     const processGroup =
       this.session.isolateProcessGroup && process.platform !== "win32" && pid
@@ -1175,6 +1280,26 @@ export class CodexAppServer {
     }
   }
 
+  private handleProcessFailure(error: Error) {
+    if (this.failureReported) return;
+    this.failureReported = true;
+    this.rejectDrawsyMcp(error);
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    if (!this.closed) {
+      this.emit({
+        type: "error",
+        data: {
+          code: "codex_runtime_stopped",
+          message: "The local Codex runtime stopped. Retry this chat."
+        }
+      });
+    }
+  }
+
   private handleLine(line: string) {
     let message: JsonObject;
     try {
@@ -1195,7 +1320,7 @@ export class CodexAppServer {
         this.pending.delete(message.id);
         clearTimeout(pending.timer);
         if (message.error) {
-          pending.reject(new Error(JSON.stringify(message.error)));
+          pending.reject(new CodexRpcError(message.error));
         } else {
           pending.resolve(message.result);
         }
@@ -1528,26 +1653,43 @@ export class CodexAppServer {
   }
 
   private request(method: string, params: JsonObject) {
+    if (
+      this.closed ||
+      this.process.exitCode !== null ||
+      !this.process.stdin.writable
+    ) {
+      return Promise.reject(new Error("The local Codex runtime is not running."));
+    }
     const id = this.nextId++;
-    this.process.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`
-    );
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Codex request timed out: ${method}`));
       }, 300_000);
       this.pending.set(id, { resolve, reject, timer });
+      this.process.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
+        (error) => {
+          if (!error) return;
+          const pending = this.pending.get(id);
+          if (!pending) return;
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+          pending.reject(error);
+        }
+      );
     });
   }
 
   private notify(method: string, params: JsonObject = {}) {
+    if (this.closed || !this.process.stdin.writable) return;
     this.process.stdin.write(
       `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`
     );
   }
 
   private respond(id: string | number, result: JsonObject) {
+    if (this.closed || !this.process.stdin.writable) return;
     this.process.stdin.write(
       `${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`
     );

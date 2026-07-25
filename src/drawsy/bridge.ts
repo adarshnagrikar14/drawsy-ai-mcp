@@ -20,8 +20,15 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import { CodexAppServer } from "./codex-app-server.js";
+import {
+  CodexAppServer,
+  isCodexThreadMissingError
+} from "./codex-app-server.js";
 import { OpenCodeAppServer } from "./opencode-app-server.js";
+import {
+  LocalConversationStore,
+  type LocalConversationPreferences
+} from "./local-conversation-store.js";
 import { pickFolder } from "./folder-picker.js";
 import {
   createCanvasImageAsset,
@@ -144,6 +151,7 @@ type StoredContextCapture = {
 
 type Session = {
   id: string;
+  conversationId: string | null;
   token: string;
   internalSecret: string;
   canvasId: string | null;
@@ -287,6 +295,90 @@ const parsePromptTags = (value: unknown, label: string): AgentPromptTag[] => {
   );
 };
 
+const parseLocalPreferences = (
+  value: Record<string, unknown>
+): Omit<LocalConversationPreferences, "updatedAt"> => {
+  if (
+    Object.keys(value).some(
+      (key) => key !== "engine" && key !== "codex" && key !== "opencode"
+    ) ||
+    (value.engine !== "codex" && value.engine !== "opencode")
+  ) {
+    throw new BridgeRequestError(
+      400,
+      "preferences_invalid",
+      "The local AI preferences are invalid."
+    );
+  }
+  const parsePreference = (
+    candidate: unknown
+  ): LocalConversationPreferences["codex"] => {
+    if (!isRecord(candidate)) {
+      throw new BridgeRequestError(
+        400,
+        "preferences_invalid",
+        "The local AI preferences are invalid."
+      );
+    }
+    if (
+      Object.keys(candidate).some(
+        (key) =>
+          ![
+            "model",
+            "modelProvider",
+            "effort",
+            "accessMode",
+            "internetEnabled"
+          ].includes(key)
+      ) ||
+      (candidate.model !== undefined &&
+        candidate.model !== null &&
+        typeof candidate.model !== "string") ||
+      (candidate.modelProvider !== undefined &&
+        candidate.modelProvider !== null &&
+        typeof candidate.modelProvider !== "string") ||
+      (candidate.effort !== undefined &&
+        candidate.effort !== null &&
+        typeof candidate.effort !== "string") ||
+      (candidate.accessMode !== undefined &&
+        candidate.accessMode !== "workspace" &&
+        candidate.accessMode !== "readOnly" &&
+        candidate.accessMode !== null) ||
+      (candidate.internetEnabled !== undefined &&
+        candidate.internetEnabled !== null &&
+        typeof candidate.internetEnabled !== "boolean")
+    ) {
+      throw new BridgeRequestError(
+        400,
+        "preferences_invalid",
+        "The local AI preferences are invalid."
+      );
+    }
+    return {
+      model: typeof candidate.model === "string" ? candidate.model : null,
+      modelProvider:
+        typeof candidate.modelProvider === "string"
+          ? candidate.modelProvider
+          : null,
+      effort: typeof candidate.effort === "string" ? candidate.effort : null,
+      accessMode:
+        candidate.accessMode === "workspace" ||
+        candidate.accessMode === "readOnly"
+          ? (candidate.accessMode as "workspace" | "readOnly")
+          : null,
+      internetEnabled:
+        typeof candidate.internetEnabled === "boolean"
+          ? candidate.internetEnabled
+          : null
+    };
+  };
+  return {
+    engine: value.engine,
+    codex: parsePreference(value.codex),
+    opencode: parsePreference(value.opencode)
+  };
+};
+
 const parseContextReferences = (value: unknown): CanvasContextReference[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 3) {
@@ -308,6 +400,11 @@ export const createDrawsyBridge = (
 ) => {
   const port = options.port ?? Number(process.env.PORT || 3031);
   const host = options.host ?? "127.0.0.1";
+  if (!["127.0.0.1", "::1", "localhost"].includes(host)) {
+    throw new Error(
+      "Drawsy AI conversation history is single-user local state. The bridge must bind to loopback until an authenticated local-companion transport exists."
+    );
+  }
   const allowedOrigins = new Set(
     options.allowedOrigins ??
       (
@@ -352,6 +449,9 @@ export const createDrawsyBridge = (
   }
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
+  const conversationSessions = new Map<string, Session>();
+  const conversationStartLocks = new Map<string, Promise<void>>();
+  const localConversations = new LocalConversationStore();
   const remoteRuntime = readRemoteRuntimeConfig();
   const previewProxy = remoteRuntime
     ? new RemotePreviewProxy(remoteRuntime)
@@ -405,6 +505,12 @@ export const createDrawsyBridge = (
 
   const closeSession = (session: Session) => {
     sessions.delete(session.id);
+    if (
+      session.conversationId &&
+      conversationSessions.get(session.conversationId)?.id === session.id
+    ) {
+      conversationSessions.delete(session.conversationId);
+    }
     previewProxy?.removeSession(session.id);
     session.agent.close();
     if (previewPorts) {
@@ -1115,7 +1221,7 @@ export const createDrawsyBridge = (
         if (!requirePublicOrigin(request, response)) return;
         response.setHeader(
           "access-control-allow-methods",
-          "GET,POST,DELETE,OPTIONS"
+          "GET,POST,PUT,DELETE,OPTIONS"
         );
         response.setHeader(
           "access-control-allow-headers",
@@ -1252,6 +1358,42 @@ export const createDrawsyBridge = (
 
       if (!requirePublicOrigin(request, response)) return;
 
+      if (request.method === "GET" && url.pathname === "/v1/preferences") {
+        json(response, 200, {
+          preferences: await localConversations.getPreferences()
+        });
+        return;
+      }
+
+      if (request.method === "PUT" && url.pathname === "/v1/preferences") {
+        const preferences = await localConversations.setPreferences(
+          parseLocalPreferences(await readJson(request))
+        );
+        json(response, 200, { preferences });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/conversations") {
+        const scope = url.searchParams.get("scope");
+        const canvasId = url.searchParams.get("canvasId");
+        if (
+          (scope !== "canvas" && scope !== "general") ||
+          (scope === "canvas" && !canvasId)
+        ) {
+          json(response, 400, {
+            error: {
+              code: "conversation_scope_invalid",
+              message: "Choose a valid conversation history scope."
+            }
+          });
+          return;
+        }
+        json(response, 200, {
+          conversations: await localConversations.list(scope, canvasId)
+        });
+        return;
+      }
+
       const contextAssetMatch = url.pathname.match(
         /^\/v1\/sessions\/([^/]+)\/context-assets\/([^/]+)\/(preview|source)\/([^/]+)$/
       );
@@ -1317,6 +1459,13 @@ export const createDrawsyBridge = (
         const canvasId = typeof body.canvasId === "string" ? body.canvasId : "";
         const canvasName =
           typeof body.canvasName === "string" ? body.canvasName : "Untitled";
+        const conversationId =
+          typeof body.conversationId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            body.conversationId
+          )
+            ? body.conversationId
+            : null;
         const engine = body.engine === undefined ? "codex" : body.engine;
         const surfaceKind = body.surfaceKind ?? "canvas";
         const surfaceId =
@@ -1329,16 +1478,6 @@ export const createDrawsyBridge = (
             : surfaceKind === "neutral"
             ? "Drawsy"
             : canvasName;
-        const folder = selections.get(selectionId);
-        if (!folder || folder.expiresAt <= Date.now()) {
-          json(response, 400, {
-            error: {
-              code: "folder_expired",
-              message: "Choose the folder again."
-            }
-          });
-          return;
-        }
         if (
           (surfaceKind === "canvas" || surfaceKind === "presentation") &&
           !canvasId
@@ -1376,127 +1515,331 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        if (
-          surfaceId &&
-          (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
-        ) {
+        if (!conversationId) {
           json(response, 400, {
             error: {
-              code: "surface_invalid",
-              message: "The Drawsy surface id is invalid."
+              code: "conversation_required",
+              message: "A local conversation id is required."
             }
           });
           return;
         }
-        const id = randomUUID();
-        const token = randomBytes(32).toString("base64url");
-        const internalSecret = randomBytes(32).toString("base64url");
-        const supportsLivePreview = surfaceSupportsLivePreview(surfaceKind);
-        const previewPort =
-          previewPorts && supportsLivePreview
-            ? await previewPorts.acquire(id)
-            : null;
-        if (previewPorts && supportsLivePreview && previewPort === null) {
-          throw new BridgeRequestError(
-            503,
-            "preview_capacity_exhausted",
-            "No isolated live-preview port is currently available."
-          );
-        }
-        let remoteWorkspacePath: string | null = null;
-        let sessionRef: Session | null = null;
-        let agent: CodexAppServer | OpenCodeAppServer;
+        const previousStart = conversationStartLocks.get(conversationId);
+        let releaseStart!: () => void;
+        const currentStart = new Promise<void>((resolve) => {
+          releaseStart = resolve;
+        });
+        const startTail = (previousStart || Promise.resolve()).then(
+          () => currentStart
+        );
+        conversationStartLocks.set(conversationId, startTail);
+        if (previousStart) await previousStart;
         try {
-          remoteWorkspacePath = remoteRuntime
-            ? await createRemoteSessionWorkspace(remoteRuntime, id, folder.path)
+          const scope = canvasId ? "canvas" : "general";
+          const existingConversation = await localConversations.get(
+            conversationId
+          );
+          if (
+            existingConversation &&
+            (existingConversation.engine !== engine ||
+              existingConversation.scope !== scope ||
+              existingConversation.canvasId !== (canvasId || null))
+          ) {
+            json(response, 409, {
+              error: {
+                code: "conversation_scope_conflict",
+                message:
+                  "This conversation belongs to a different Drawsy scope."
+              }
+            });
+            return;
+          }
+          let localConversation = await localConversations.upsert({
+            id: conversationId,
+            scope,
+            canvasId: canvasId || null,
+            canvasName: canvasId ? canvasName : null,
+            engine,
+            title: "New conversation",
+            createdAt: existingConversation?.createdAt || Date.now(),
+            updatedAt: existingConversation?.updatedAt || Date.now(),
+            messageCount: existingConversation?.messageCount || 0
+          });
+          let hadNativeSession = Boolean(
+            engine === "codex"
+              ? localConversation.codexThreadId
+              : localConversation.openCodeSessionId
+          );
+          const existingConversationSession = conversationId
+            ? conversationSessions.get(conversationId)
             : null;
+          if (existingConversationSession) {
+            if (existingConversationSession.engine !== engine) {
+              json(response, 409, {
+                error: {
+                  code: "conversation_scope_conflict",
+                  message:
+                    "This conversation belongs to a different Drawsy engine."
+                }
+              });
+              return;
+            }
+            const requestedCanvasId = canvasId || null;
+            if (existingConversationSession.canvasId !== requestedCanvasId) {
+              json(response, 409, {
+                error: {
+                  code: "conversation_scope_conflict",
+                  message:
+                    "This conversation belongs to a different Drawsy canvas."
+                }
+              });
+              return;
+            }
+            const matchesCurrentSurface =
+              existingConversationSession.surfaceKind ===
+                validatedSurfaceKind &&
+              existingConversationSession.surfaceId === surfaceId;
+            if (requestedCanvasId && !matchesCurrentSurface) {
+              json(response, 409, {
+                error: {
+                  code: "conversation_scope_conflict",
+                  message:
+                    "This conversation belongs to a different Drawsy canvas."
+                }
+              });
+              return;
+            }
+            if (matchesCurrentSurface) {
+              try {
+                const messages =
+                  await existingConversationSession.agent.getConversationMessages();
+                existingConversationSession.token =
+                  randomBytes(32).toString("base64url");
+                existingConversationSession.touchedAt = Date.now();
+                json(response, 200, {
+                  id: existingConversationSession.id,
+                  token: existingConversationSession.token,
+                  folderName: existingConversationSession.folder.name,
+                  resumed: true,
+                  conversation: localConversation,
+                  messages
+                });
+                return;
+              } catch (error) {
+                console.warn(
+                  "Drawsy native conversation runtime was unavailable; recreating it.",
+                  error
+                );
+                closeSession(existingConversationSession);
+              }
+            }
+            // General history can be resumed in a different non-canvas surface.
+            // It gets a new correctly-scoped runtime while retaining its native
+            // local Codex/OpenCode session identity.
+            const replacementFolder = selections.get(selectionId);
+            if (
+              !replacementFolder ||
+              replacementFolder.expiresAt <= Date.now()
+            ) {
+              json(response, 400, {
+                error: {
+                  code: "folder_expired",
+                  message: "Choose the folder again."
+                }
+              });
+              return;
+            }
+            closeSession(existingConversationSession);
+          }
+          const folder = selections.get(selectionId);
+          if (!folder || folder.expiresAt <= Date.now()) {
+            json(response, 400, {
+              error: {
+                code: "folder_expired",
+                message: "Choose the folder again."
+              }
+            });
+            return;
+          }
+          if (
+            surfaceId &&
+            (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
+          ) {
+            json(response, 400, {
+              error: {
+                code: "surface_invalid",
+                message: "The Drawsy surface id is invalid."
+              }
+            });
+            return;
+          }
+          const id = randomUUID();
+          const token = randomBytes(32).toString("base64url");
+          const internalSecret = randomBytes(32).toString("base64url");
+          const supportsLivePreview = surfaceSupportsLivePreview(surfaceKind);
+          const previewPort =
+            previewPorts && supportsLivePreview
+              ? await previewPorts.acquire(id)
+              : null;
+          if (previewPorts && supportsLivePreview && previewPort === null) {
+            throw new BridgeRequestError(
+              503,
+              "preview_capacity_exhausted",
+              "No isolated live-preview port is currently available."
+            );
+          }
+          let remoteWorkspacePath: string | null = null;
+          let sessionRef: Session | null = null;
+          let agent: CodexAppServer | OpenCodeAppServer;
+          try {
+            remoteWorkspacePath = remoteRuntime
+              ? await createRemoteSessionWorkspace(
+                  remoteRuntime,
+                  id,
+                  folder.path
+                )
+              : null;
+            const sessionFolder: FolderSelection = remoteWorkspacePath
+              ? { ...folder, path: remoteWorkspacePath }
+              : folder;
+            await prepareContextStore(sessionFolder.path);
+            const agentOptions = {
+              id,
+              secret: internalSecret,
+              bridgeUrl,
+              surfaceKind: validatedSurfaceKind,
+              surfaceId,
+              surfaceName,
+              isolateProcessGroup: Boolean(remoteRuntime),
+              previewPort
+            };
+            if (engine === "opencode") {
+              agent = await OpenCodeAppServer.start(
+                sessionFolder.path,
+                {
+                  ...agentOptions,
+                  runtimePath: path.join(
+                    localConversations.stateDirectory,
+                    "opencode",
+                    conversationId
+                  ),
+                  nativeSessionId: localConversation.openCodeSessionId
+                },
+                (event) => sessionRef && emit(sessionRef, event)
+              );
+              hadNativeSession = agent.resumed;
+            } else {
+              const startCodex = (nativeThreadId: string | null) =>
+                CodexAppServer.start(
+                  sessionFolder.path,
+                  { ...agentOptions, nativeThreadId },
+                  (event) => sessionRef && emit(sessionRef, event),
+                  (image) => {
+                    if (!sessionRef) return;
+                    const savedPath =
+                      image.savedPath && path.isAbsolute(image.savedPath)
+                        ? path.resolve(image.savedPath)
+                        : undefined;
+                    const maxDataUrlLength =
+                      Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
+                    const result =
+                      image.result?.startsWith("data:image/") &&
+                      image.result.length <= maxDataUrlLength
+                        ? image.result
+                        : undefined;
+                    if (!savedPath && !result) return;
+                    sessionRef.generatedImages.push({
+                      id: image.id,
+                      savedPath,
+                      result,
+                      createdAt: Date.now()
+                    });
+                    if (sessionRef.generatedImages.length > 8) {
+                      sessionRef.generatedImages.shift();
+                    }
+                  }
+                );
+              try {
+                agent = await startCodex(localConversation.codexThreadId);
+              } catch (error) {
+                if (
+                  !localConversation.codexThreadId ||
+                !isCodexThreadMissingError(error)
+                ) {
+                  throw error;
+                }
+                localConversation = await localConversations.setNativeSession(
+                  conversationId,
+                  "codex",
+                  null
+                );
+                hadNativeSession = false;
+                agent = await startCodex(null);
+              }
+            }
+          } catch (error) {
+            previewPorts?.release(id);
+            if (remoteWorkspacePath) {
+              await removeRemoteSessionWorkspace(remoteWorkspacePath);
+            }
+            throw error;
+          }
           const sessionFolder: FolderSelection = remoteWorkspacePath
             ? { ...folder, path: remoteWorkspacePath }
             : folder;
-          await prepareContextStore(sessionFolder.path);
-          const agentOptions = {
+          const session: Session = {
             id,
-            secret: internalSecret,
-            bridgeUrl,
+            conversationId,
+            token,
+            internalSecret,
+            canvasId: canvasId || null,
+            canvasName,
             surfaceKind: validatedSurfaceKind,
             surfaceId,
             surfaceName,
-            isolateProcessGroup: Boolean(remoteRuntime),
-            previewPort
+            folder: sessionFolder,
+            clients: new Set(),
+            canvasPending: new Map(),
+            generatedImages: [],
+            contextCaptures: new Map(),
+            activeConnectorTurn: null,
+            activeResourceTurn: null,
+            engine,
+            agent,
+            remoteWorkspacePath,
+            previewPort,
+            touchedAt: Date.now()
           };
-          if (engine === "opencode") {
-            agent = await OpenCodeAppServer.start(
-              sessionFolder.path,
-              agentOptions,
-              (event) => sessionRef && emit(sessionRef, event)
-            );
-          } else {
-            agent = await CodexAppServer.start(
-              sessionFolder.path,
-              agentOptions,
-              (event) => sessionRef && emit(sessionRef, event),
-              (image) => {
-                if (!sessionRef) return;
-                const savedPath =
-                  image.savedPath && path.isAbsolute(image.savedPath)
-                    ? path.resolve(image.savedPath)
-                    : undefined;
-                const maxDataUrlLength =
-                  Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
-                const result =
-                  image.result?.startsWith("data:image/") &&
-                  image.result.length <= maxDataUrlLength
-                    ? image.result
-                    : undefined;
-                if (!savedPath && !result) return;
-                sessionRef.generatedImages.push({
-                  id: image.id,
-                  savedPath,
-                  result,
-                  createdAt: Date.now()
-                });
-                if (sessionRef.generatedImages.length > 8) {
-                  sessionRef.generatedImages.shift();
-                }
-              }
-            );
+          sessionRef = session;
+          sessions.set(id, session);
+          if (conversationId) conversationSessions.set(conversationId, session);
+          localConversation = await localConversations.setNativeSession(
+            conversationId,
+            engine,
+            agent.nativeSessionId
+          );
+          let messages;
+          try {
+            messages = await agent.getConversationMessages();
+          } catch (error) {
+            closeSession(session);
+            throw error;
           }
-        } catch (error) {
-          previewPorts?.release(id);
-          if (remoteWorkspacePath) {
-            await removeRemoteSessionWorkspace(remoteWorkspacePath);
+          json(response, 201, {
+            id,
+            token,
+            folderName: sessionFolder.name,
+            resumed: hadNativeSession,
+            conversation: localConversation,
+            messages
+          });
+          return;
+        } finally {
+          releaseStart();
+          if (conversationStartLocks.get(conversationId) === startTail) {
+            conversationStartLocks.delete(conversationId);
           }
-          throw error;
         }
-        const sessionFolder: FolderSelection = remoteWorkspacePath
-          ? { ...folder, path: remoteWorkspacePath }
-          : folder;
-        const session: Session = {
-          id,
-          token,
-          internalSecret,
-          canvasId: canvasId || null,
-          canvasName,
-          surfaceKind: validatedSurfaceKind,
-          surfaceId,
-          surfaceName,
-          folder: sessionFolder,
-          clients: new Set(),
-          canvasPending: new Map(),
-          generatedImages: [],
-          contextCaptures: new Map(),
-          activeConnectorTurn: null,
-          activeResourceTurn: null,
-          engine,
-          agent,
-          remoteWorkspacePath,
-          previewPort,
-          touchedAt: Date.now()
-        };
-        sessionRef = session;
-        sessions.set(id, session);
-        json(response, 201, { id, token, folderName: sessionFolder.name });
-        return;
       }
 
       const eventsMatch = url.pathname.match(
@@ -1570,6 +1913,16 @@ export const createDrawsyBridge = (
             connectorTurn?.sources || [],
             resourceTurn?.resources || []
           );
+          if (session.conversationId) {
+            await localConversations
+              .recordUserMessage(session.conversationId, message)
+              .catch((error) =>
+                console.warn(
+                  "Drawsy local conversation title could not be saved.",
+                  error
+                )
+              );
+          }
         } catch (error) {
           session.activeConnectorTurn = null;
           session.activeResourceTurn = null;
@@ -1639,11 +1992,17 @@ export const createDrawsyBridge = (
           });
           return;
         }
-        json(
-          response,
-          200,
-          await session.agent.updateSettings(body as AgentSettingsPatch)
+        const result = await session.agent.updateSettings(
+          body as AgentSettingsPatch
         );
+        if (session.conversationId) {
+          await localConversations.setNativeSession(
+            session.conversationId,
+            session.engine,
+            session.agent.nativeSessionId
+          );
+        }
+        json(response, 200, result);
         return;
       }
 

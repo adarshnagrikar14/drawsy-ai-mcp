@@ -31,6 +31,13 @@ test("only visual canvas surfaces reserve live-preview capacity", () => {
   assert.equal(surfaceSupportsLivePreview("neutral"), false);
 });
 
+test("conversation bridge refuses shared-network binding", () => {
+  assert.throws(
+    () => createDrawsyBridge({ host: "0.0.0.0" }),
+    /must bind to loopback/
+  );
+});
+
 test("connector turns require exact, unexpired, matching grants", () => {
   const expiresAt = Date.now() + 60_000;
   assert.deepEqual(
@@ -284,14 +291,27 @@ import readline from "node:readline";
 import { appendFile } from "node:fs/promises";
 const log = process.env.DRAWSY_TEST_REQUEST_LOG;
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+let materialized = false;
+let wasResumed = false;
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const message = JSON.parse(line);
   if (message.id) await appendFile(log, JSON.stringify(message) + "\\n");
   if (message.method === "initialize") send({ id: message.id, result: { ok: true } });
   if (message.method === "config/read") send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: "bad" } } } } });
-  if (message.method === "thread/start") {
+  if (message.method === "thread/start" || message.method === "thread/resume") {
+    wasResumed = message.method === "thread/resume";
     send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-test", modelProvider: "openai", reasoningEffort: "medium", serviceTier: null, activePermissionProfile: { id: ":workspace" }, runtimeWorkspaceRoots: message.params.runtimeWorkspaceRoots, approvalPolicy: "never", sandbox: { networkAccess: false } } });
     send({ method: "mcpServer/startupStatus/updated", params: { threadId: "thread-1", name: "drawsy", status: "ready" } });
+  }
+  if (message.method === "thread/read") {
+    if (!materialized && !wasResumed) {
+      send({ id: message.id, error: { code: -32600, message: "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message" } });
+    } else {
+      send({ id: message.id, result: { thread: { turns: [{ id: "prior-turn", status: "completed", items: [
+        { type: "userMessage", id: "prior-user", content: [{ type: "text", text: "Remember the launch plan." }] },
+        { type: "agentMessage", id: "prior-agent", text: "The launch plan has three phases." }
+      ] }] } } });
+    }
   }
   if (message.method === "model/list") send({ id: message.id, result: { data: [
     { id: "gpt-test", model: "gpt-test", displayName: "GPT Test", description: "Current model", hidden: false, supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }], defaultReasoningEffort: "medium", isDefault: true },
@@ -312,6 +332,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (message.method === "thread/settings/update") send({ id: message.id, result: {} });
   if (message.method === "thread/unsubscribe") send({ id: message.id, result: { status: "unsubscribed" } });
   if (message.method === "turn/start") {
+    materialized = true;
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
@@ -349,12 +370,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     NODE_ENV: process.env.NODE_ENV,
     DRAWSY_TEST_FOLDER: process.env.DRAWSY_TEST_FOLDER,
     DRAWSY_CODEX_BIN: process.env.DRAWSY_CODEX_BIN,
-    DRAWSY_TEST_REQUEST_LOG: process.env.DRAWSY_TEST_REQUEST_LOG
+    DRAWSY_TEST_REQUEST_LOG: process.env.DRAWSY_TEST_REQUEST_LOG,
+    DRAWSY_LOCAL_STATE_DIR: process.env.DRAWSY_LOCAL_STATE_DIR
   };
   process.env.NODE_ENV = "test";
   process.env.DRAWSY_TEST_FOLDER = selectedFolder;
   process.env.DRAWSY_CODEX_BIN = fakeCodex;
   process.env.DRAWSY_TEST_REQUEST_LOG = requestLog;
+  process.env.DRAWSY_LOCAL_STATE_DIR = path.join(root, "local-state");
   const bridge = createDrawsyBridge({ port, allowedOrigins: [origin] });
 
   try {
@@ -368,6 +391,70 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       name: string;
     };
     assert.equal(picked.name, "workspace");
+
+    const preferencesPreflight = await fetch(
+      `${bridge.address}/v1/preferences`,
+      {
+        method: "OPTIONS",
+        headers: {
+          origin,
+          "access-control-request-method": "PUT",
+          "access-control-request-headers": "content-type"
+        }
+      }
+    );
+    assert.equal(preferencesPreflight.status, 204);
+    assert.match(
+      preferencesPreflight.headers.get("access-control-allow-methods") || "",
+      /PUT/
+    );
+
+    const initialPreferences = await fetch(`${bridge.address}/v1/preferences`, {
+      headers: { origin }
+    });
+    assert.equal(initialPreferences.status, 200);
+    assert.deepEqual((await initialPreferences.json()).preferences, {
+      engine: "codex",
+      codex: {
+        model: null,
+        modelProvider: null,
+        effort: null,
+        accessMode: null,
+        internetEnabled: null
+      },
+      opencode: {
+        model: null,
+        modelProvider: null,
+        effort: null,
+        accessMode: null,
+        internetEnabled: null
+      },
+      updatedAt: 0
+    });
+
+    const savedPreferences = await fetch(`${bridge.address}/v1/preferences`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        engine: "opencode",
+        codex: {
+          model: "gpt-next",
+          modelProvider: "openai",
+          effort: "high",
+          accessMode: "workspace",
+          internetEnabled: false
+        },
+        opencode: {
+          model: "open-model",
+          modelProvider: "opencode",
+          effort: null,
+          accessMode: "readOnly",
+          internetEnabled: true
+        }
+      })
+    });
+    assert.equal(savedPreferences.status, 200);
+    assert.equal((await savedPreferences.json()).preferences.engine, "opencode");
 
     const drawDocumentResponse = await fetch(
       `${bridge.address}/v1/folders/${picked.selectionId}/draw-document`,
@@ -387,6 +474,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(drawDocument.hash, /^[a-f0-9]{64}$/);
     assert.match(drawDocument.sourceId, /^[a-f0-9]{24}$/);
 
+    const conversationId = "f0c9f436-3dc7-42c1-b43c-95a9a1dc5d55";
     const session = (await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
       headers,
@@ -394,9 +482,58 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         selectionId: picked.selectionId,
         canvasId: "canvas-1",
         canvasName: "Canvas 1",
-        surfaceKind: "presentation"
+        surfaceKind: "presentation",
+        conversationId
       })
-    }).then((response) => response.json())) as { id: string; token: string };
+    }).then((response) => response.json())) as {
+      id: string;
+      token: string;
+      resumed: boolean;
+      messages: Array<{ id: string; role: string; text: string }>;
+    };
+    assert.equal(session.resumed, false);
+    assert.deepEqual(session.messages, []);
+
+    const historyResponse = await fetch(
+      `${bridge.address}/v1/conversations?scope=canvas&canvasId=canvas-1`,
+      { headers: { origin } }
+    );
+    assert.equal(historyResponse.status, 200);
+    assert.deepEqual((await historyResponse.json()).conversations.map((item: { id: string }) => item.id), [conversationId]);
+
+    const resumedSession = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: "expired-selection-is-not-needed-for-a-resume",
+        canvasId: "canvas-1",
+        canvasName: "Canvas 1",
+        surfaceKind: "presentation",
+        conversationId
+      })
+    });
+    assert.equal(resumedSession.status, 200);
+    const resumed = (await resumedSession.json()) as {
+      id: string;
+      token: string;
+      resumed: boolean;
+    };
+    assert.equal(resumed.id, session.id);
+    assert.equal(resumed.resumed, true);
+    session.token = resumed.token;
+
+    const conflictingResume = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: picked.selectionId,
+        canvasId: "canvas-2",
+        canvasName: "Canvas 2",
+        surfaceKind: "canvas",
+        conversationId
+      })
+    });
+    assert.equal(conflictingResume.status, 409);
 
     const eventsResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/events`,
@@ -567,6 +704,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(thread.params.permissions, ":workspace");
     assert.deepEqual(thread.params.runtimeWorkspaceRoots, [canonicalFolder]);
     assert.equal(thread.params.approvalPolicy, "never");
+    assert.equal(thread.params.ephemeral, false);
     assert.equal(thread.params.environments, undefined);
     assert.match(
       thread.params.developerInstructions,
@@ -650,10 +788,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       canonicalFolder
     );
     const threads = log.filter((message) => message.method === "thread/start");
-    assert.equal(threads.length, 2);
+    const resumes = log.filter((message) => message.method === "thread/resume");
+    assert.equal(threads.length, 1);
     assert.equal(threads[0].params.config.features.network_proxy, false);
-    assert.equal(threads[1].params.config.web_search, "disabled");
-    assert.deepEqual(threads[1].params.config.features.network_proxy, {
+    assert.equal(resumes[0].params.threadId, "thread-1");
+    assert.equal(resumes[0].params.config.web_search, "disabled");
+    assert.deepEqual(resumes[0].params.config.features.network_proxy, {
       enabled: true,
       mode: "full",
       domains: {
@@ -663,8 +803,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       },
       allow_local_binding: true
     });
-    assert.equal(threads[1].params.model, "gpt-next");
-    assert.deepEqual(threads[1].params.runtimeWorkspaceRoots, [
+    assert.equal(resumes[0].params.model, "gpt-next");
+    assert.deepEqual(resumes[0].params.runtimeWorkspaceRoots, [
       canonicalFolder
     ]);
     const turn = log.find((message) => message.method === "turn/start");
@@ -857,7 +997,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       body: JSON.stringify({
         selectionId: picked.selectionId,
         surfaceKind: "neutral",
-        surfaceName: "Connectors"
+        surfaceName: "Connectors",
+        conversationId: "648f1948-a92f-442b-a45d-e6c3e3b93e85"
       })
     });
     assert.equal(neutralResponse.status, 201);
@@ -876,6 +1017,128 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }
     );
     assert.equal(closeNeutralResponse.status, 204);
+
+    const generalConversationId = "2dcf930b-fbaa-487e-94dd-eb79b497485f";
+    const generalSession = (await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: picked.selectionId,
+        surfaceKind: "neutral",
+        surfaceName: "Connectors",
+        conversationId: generalConversationId
+      })
+    }).then((response) => response.json())) as { id: string; token: string };
+    const movedGeneralResponse = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        selectionId: picked.selectionId,
+        surfaceKind: "kanban",
+        surfaceId: "board-1",
+        surfaceName: "Kanban",
+        conversationId: generalConversationId
+      })
+    });
+    assert.equal(movedGeneralResponse.status, 201);
+    const movedGeneral = (await movedGeneralResponse.json()) as {
+      id: string;
+      token: string;
+      resumed: boolean;
+      messages: Array<{ id: string; role: string; text: string }>;
+    };
+    assert.notEqual(movedGeneral.id, generalSession.id);
+    assert.equal(movedGeneral.resumed, true);
+    assert.deepEqual(movedGeneral.messages, [
+      {
+        id: "prior-user",
+        role: "user",
+        text: "Remember the launch plan."
+      },
+      {
+        id: "prior-agent",
+        role: "assistant",
+        text: "The launch plan has three phases."
+      }
+    ]);
+    const fallbackTurn = await fetch(
+      `${bridge.address}/v1/sessions/${movedGeneral.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${movedGeneral.token}` },
+        body: JSON.stringify({ message: "What should happen next?" })
+      }
+    );
+    assert.equal(fallbackTurn.status, 202);
+    const fallbackLog = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(
+      fallbackLog.some((message) => message.method === "thread/resume")
+    );
+    const closeMovedGeneralResponse = await fetch(
+      `${bridge.address}/v1/sessions/${movedGeneral.id}`,
+      {
+        method: "DELETE",
+        headers: { origin, authorization: `Bearer ${movedGeneral.token}` }
+      }
+    );
+    assert.equal(closeMovedGeneralResponse.status, 204);
+
+    const threadStartCount = async () =>
+      (await readFile(requestLog, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((message) => message.method === "thread/start").length;
+    const startsBeforeConcurrentResume = await threadStartCount();
+    const concurrentConversationId =
+      "690811eb-51c1-4c03-827d-da1721e0ea1e";
+    const concurrentInput = JSON.stringify({
+      selectionId: picked.selectionId,
+      canvasId: "canvas-concurrent",
+      canvasName: "Concurrent canvas",
+      surfaceKind: "canvas",
+      conversationId: concurrentConversationId
+    });
+    const concurrentResponses = await Promise.all(
+      [0, 1].map(() =>
+        fetch(`${bridge.address}/v1/sessions`, {
+          method: "POST",
+          headers,
+          body: concurrentInput
+        })
+      )
+    );
+    assert.deepEqual(
+      concurrentResponses.map((response) => response.status).sort(),
+      [200, 201]
+    );
+    const concurrentSessions = (await Promise.all(
+      concurrentResponses.map((response) => response.json())
+    )) as Array<{ id: string; token: string }>;
+    assert.equal(concurrentSessions[0]!.id, concurrentSessions[1]!.id);
+    assert.equal(
+      await threadStartCount(),
+      startsBeforeConcurrentResume + 1,
+      "simultaneous resumes must share one native runtime"
+    );
+    const currentConcurrentSession =
+      concurrentSessions[concurrentResponses.findIndex(
+        (response) => response.status === 200
+      )]!;
+    const closeConcurrentResponse = await fetch(
+      `${bridge.address}/v1/sessions/${currentConcurrentSession.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          origin,
+          authorization: `Bearer ${currentConcurrentSession.token}`
+        }
+      }
+    );
+    assert.equal(closeConcurrentResponse.status, 204);
 
     await reader.cancel();
     const closeResponse = await fetch(
