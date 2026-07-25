@@ -563,11 +563,18 @@ export class CodexAppServer {
         console.error(`[codex:${this.session.id}] ${text}`);
       }
     });
-    this.process.on("error", (error) => this.handleProcessFailure(error));
-    this.process.stdin.on("error", (error) =>
-      this.handleProcessFailure(error)
-    );
+    // The runtime may stop before initialization reaches the MCP readiness
+    // wait. Preserve the rejection for active callers while ensuring a deferred
+    // readiness failure cannot become an unhandled process-level rejection.
+    void this.drawsyMcpReady.catch(() => undefined);
+    this.process.on("error", (error) => {
+      if (!this.closed) this.handleProcessFailure(error);
+    });
+    this.process.stdin.on("error", (error) => {
+      if (!this.closed) this.handleProcessFailure(error);
+    });
     this.process.on("exit", (code) => {
+      if (this.closed) return;
       this.handleProcessFailure(
         new Error(`Codex app-server exited (${code ?? "signal"}).`)
       );
@@ -1257,6 +1264,9 @@ export class CodexAppServer {
   close() {
     if (this.closed) return;
     this.closed = true;
+    const closedError = new Error("The local Codex runtime closed.");
+    this.rejectDrawsyMcp(closedError);
+    this.rejectPendingRequests(closedError);
     const pid = this.process.pid;
     const processGroup =
       this.session.isolateProcessGroup && process.platform !== "win32" && pid
@@ -1284,20 +1294,22 @@ export class CodexAppServer {
     if (this.failureReported) return;
     this.failureReported = true;
     this.rejectDrawsyMcp(error);
+    this.rejectPendingRequests(error);
+    this.emit({
+      type: "error",
+      data: {
+        code: "codex_runtime_stopped",
+        message: "The local Codex runtime stopped. Retry this chat."
+      }
+    });
+  }
+
+  private rejectPendingRequests(error: Error) {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
     }
     this.pending.clear();
-    if (!this.closed) {
-      this.emit({
-        type: "error",
-        data: {
-          code: "codex_runtime_stopped",
-          message: "The local Codex runtime stopped. Retry this chat."
-        }
-      });
-    }
   }
 
   private handleLine(line: string) {
@@ -1658,10 +1670,14 @@ export class CodexAppServer {
       this.process.exitCode !== null ||
       !this.process.stdin.writable
     ) {
-      return Promise.reject(new Error("The local Codex runtime is not running."));
+      const unavailable = Promise.reject(
+        new Error("The local Codex runtime is not running.")
+      );
+      void unavailable.catch(() => undefined);
+      return unavailable;
     }
     const id = this.nextId++;
-    return new Promise<unknown>((resolve, reject) => {
+    const request = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Codex request timed out: ${method}`));
@@ -1679,6 +1695,11 @@ export class CodexAppServer {
         }
       );
     });
+    // Session cleanup can outlive a disconnected HTTP request. This keeps the
+    // rejection observable to active awaiters without crashing the bridge when
+    // the original caller has already gone away.
+    void request.catch(() => undefined);
+    return request;
   }
 
   private notify(method: string, params: JsonObject = {}) {
