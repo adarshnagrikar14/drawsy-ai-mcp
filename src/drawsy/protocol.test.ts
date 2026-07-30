@@ -14,6 +14,7 @@ import test from "node:test";
 
 import { createDrawsyBridge } from "./bridge.js";
 import {
+  addCanvasRenderSemantics,
   parseAgentConnectorTurn,
   parseAgentResourceTurn,
   parseCanvasContextReference,
@@ -22,6 +23,48 @@ import {
   parseLivePreviewRequest,
   surfaceSupportsLivePreview
 } from "./protocol.js";
+
+test("canvas reads expose rendered semantics without changing raw elements", () => {
+  const rawElements = [
+    {
+      id: "cylinder-1",
+      type: "ellipse",
+      dimensionality: "3d",
+      width: 240,
+      height: 160
+    },
+    {
+      id: "diamond-1",
+      type: "diamond",
+      dimensionality: "2d",
+      roundness: { type: 2 },
+      width: 100,
+      height: 100
+    },
+    {
+      id: "deleted-1",
+      type: "rectangle",
+      isDeleted: true
+    }
+  ];
+  const result = addCanvasRenderSemantics({
+    canvasId: "canvas-1",
+    elements: rawElements,
+    renderContext: {
+      theme: "dark",
+      canvasBackgroundColor: "#121212"
+    }
+  }) as { elements: unknown; renderSemantics: unknown };
+
+  assert.equal(result.elements, rawElements);
+  assert.deepEqual(result.renderSemantics, {
+    canvas: { theme: "dark", backgroundColor: "#121212" },
+    elements: [
+      { id: "cylinder-1", renderedType: "cylinder" },
+      { id: "diamond-1", renderedType: "rounded diamond" }
+    ]
+  });
+});
 
 test("only visual canvas surfaces reserve live-preview capacity", () => {
   assert.equal(surfaceSupportsLivePreview("canvas"), true);

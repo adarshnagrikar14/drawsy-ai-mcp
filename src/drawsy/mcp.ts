@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod/v4";
 
 import {
+  addCanvasRenderSemantics,
   MAX_BODY_BYTES,
   parseCanvasOperations,
   type DrawsySurfaceKind
@@ -255,9 +256,17 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false }
     },
-    async () => ({
-      content: [{ type: "text", text: await callBridge("read") }]
-    })
+    async () => {
+      const snapshot = JSON.parse(await callBridge("read")) as unknown;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(addCanvasRenderSemantics(snapshot))
+          }
+        ]
+      };
+    }
   );
 
   server.registerTool(

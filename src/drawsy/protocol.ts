@@ -18,6 +18,10 @@ export type CanvasSnapshot = {
   canvasId: string;
   canvasName: string;
   elements: unknown[];
+  renderContext?: {
+    theme: "light" | "dark";
+    canvasBackgroundColor: string;
+  };
   appState?: JsonObject;
   files?: JsonObject;
 };
@@ -262,6 +266,69 @@ export type BridgeEvent =
 
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const renderedElementType = (element: JsonObject) => {
+  const type = typeof element.type === "string" ? element.type : "unknown";
+  const rounded = isRecord(element.roundness);
+
+  if (type === "ellipse") {
+    if (element.dimensionality === "3d") {
+      return "cylinder";
+    }
+    const width =
+      typeof element.width === "number" ? Math.abs(element.width) : 0;
+    const height =
+      typeof element.height === "number" ? Math.abs(element.height) : 0;
+    return width > 0 &&
+      height > 0 &&
+      Math.abs(width - height) / Math.max(width, height) <= 0.05
+      ? "circle"
+      : "ellipse";
+  }
+  if (type === "diamond") {
+    return rounded ? "rounded diamond" : "diamond";
+  }
+  if (type === "rectangle") {
+    return rounded ? "rounded rectangle" : "rectangle";
+  }
+  return type;
+};
+
+export const addCanvasRenderSemantics = (value: unknown): unknown => {
+  if (!isRecord(value) || !Array.isArray(value.elements)) {
+    return value;
+  }
+  const renderContext = isRecord(value.renderContext)
+    ? value.renderContext
+    : {};
+  return {
+    ...value,
+    renderSemantics: {
+      canvas: {
+        theme:
+          renderContext.theme === "dark" || renderContext.theme === "light"
+            ? renderContext.theme
+            : "unknown",
+        backgroundColor:
+          typeof renderContext.canvasBackgroundColor === "string"
+            ? renderContext.canvasBackgroundColor
+            : "unknown"
+      },
+      elements: value.elements.flatMap((element) =>
+        isRecord(element) &&
+        element.isDeleted !== true &&
+        typeof element.id === "string"
+          ? [
+              {
+                id: element.id,
+                renderedType: renderedElementType(element)
+              }
+            ]
+          : []
+      )
+    }
+  };
+};
 
 const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "mail",
