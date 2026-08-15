@@ -20,6 +20,7 @@ import type {
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
 import { resolveCodexBinary } from "./codex-binary.js";
+import { extractUserPrompt } from "./conversation-history.js";
 
 class CodexRpcError extends Error {
   readonly code: number | string | null;
@@ -411,6 +412,7 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 - Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
 - External apps are unavailable. Connected sources exist only when the user attaches source tags to a turn; access them through Drawsy's read-only connected-source tools and never assume an unlisted source is available. Network access for ordinary tools is controlled by the current Drawsy session setting.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
+- Keep intermediate updates concise and useful; the client shows live activity and collapses it after completion. Give one clear final answer when the work is complete, and never repeat internal context envelopes, grants, or routing instructions to the user.
 - Work autonomously within these boundaries; do not request permission escalation.`;
 
 export const getDeveloperInstructions = (
@@ -649,28 +651,47 @@ export class CodexAppServer {
       text: string;
     }>((turn) => {
       if (!isRecord(turn) || !Array.isArray(turn.items)) return [];
-      return turn.items.flatMap<{
-        id: string;
-        role: "user" | "assistant";
-        text: string;
-      }>((item) => {
-        if (!isRecord(item) || typeof item.id !== "string") return [];
-        if (item.type === "agentMessage" && typeof item.text === "string") {
-          return item.text.trim()
-            ? [{ id: item.id, role: "assistant" as const, text: item.text }]
+      const user = turn.items
+        .flatMap((item) => {
+          if (
+            !isRecord(item) ||
+            item.type !== "userMessage" ||
+            typeof item.id !== "string" ||
+            !Array.isArray(item.content)
+          ) {
+            return [];
+          }
+          const text = item.content
+            .filter(isRecord)
+            .filter(
+              (entry) =>
+                entry.type === "text" && typeof entry.text === "string"
+            )
+            .map((entry) => entry.text as string)
+            .at(-1);
+          const prompt = text ? extractUserPrompt(text) : "";
+          return prompt
+            ? [{ id: item.id, role: "user" as const, text: prompt }]
             : [];
-        }
-        if (item.type !== "userMessage" || !Array.isArray(item.content)) {
-          return [];
-        }
-        const text = item.content
-          .filter(isRecord)
-          .filter((entry) => entry.type === "text" && typeof entry.text === "string")
-          .map((entry) => entry.text as string)
-          .at(-1)
-          ?.trim();
-        return text ? [{ id: item.id, role: "user" as const, text }] : [];
-      });
+        })
+        .at(0);
+      const assistant = turn.items
+        .flatMap((item) => {
+          if (
+            !isRecord(item) ||
+            item.type !== "agentMessage" ||
+            typeof item.id !== "string" ||
+            typeof item.text !== "string" ||
+            !item.text.trim()
+          ) {
+            return [];
+          }
+          return [{ id: item.id, role: "assistant" as const, text: item.text }];
+        })
+        .at(-1);
+      return [user, assistant].flatMap((message) =>
+        message ? [message] : []
+      );
     });
   }
 

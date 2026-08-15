@@ -23,6 +23,7 @@ import {
   type DrawsySurfaceKind,
   type JsonObject
 } from "./protocol.js";
+import { extractUserPrompt } from "./conversation-history.js";
 
 type OpenCodeSessionConfig = {
   id: string;
@@ -410,12 +411,15 @@ export class OpenCodeAppServer {
         : Array.isArray(toRecord(message.parts).data)
         ? toRecord(message.parts).data as unknown[]
         : [];
-      const text = parts
+      const textParts = parts
         .map(toRecord)
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
-        .join("\n")
-        .trim();
+      // Context envelope parts are internal; the actual user prompt is last.
+      const text =
+        (role === "user"
+          ? extractUserPrompt(textParts.at(-1) || "")
+          : textParts.join("\n")) || "";
       return id && text && (role === "user" || role === "assistant")
         ? [{ id, role, text }]
         : [];
