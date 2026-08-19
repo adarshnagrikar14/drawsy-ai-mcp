@@ -15,6 +15,7 @@ flowchart LR
   MCP <--> Surface["Current canvas or presentation"]
   Bridge --> Folder["Selected workspace folder"]
   Bridge --> Grants["Tagged source/resource grants"]
+  Bridge --> Hydra["Signed-in automatic memory + connector context"]
   Codex --> Preview["Isolated preview process"]
   Preview --> Client
 ```
@@ -38,7 +39,8 @@ The main product record and complete repository set are documented in [`excal-ai
 - **No approval deadlock.** The bridge uses `approvalPolicy: "never"`; permitted actions proceed and boundary escapes are rejected instead of opening an unusable approval flow.
 - **Internet is explicit and visible.** It is enabled by default. Codex and local macOS OpenCode sessions can disable it; hosted OpenCode refuses that change until its separate Linux network bridge exists, rather than presenting an unenforced boundary. Browser, Chrome-control, and computer-use plugins remain blocked inside Drawsy.
 - **Surface scope.** Canvas and presentation sessions receive only their current visual surface. Kanban and Jira receive their current resource only through a valid resource grant. Neutral pages start with no Drawsy resource context.
-- **Turn-scoped sources.** Only sources tagged in the current message are exposed. The bridge receives signed, short-lived grants—not OAuth tokens or provider refresh credentials.
+- **Turn-scoped live sources.** Direct provider tools are exposed only for sources tagged in the current message. The bridge receives signed, short-lived grants—not OAuth tokens or provider refresh credentials.
+- **Automatic signed-in context.** When the user is authenticated, the bridge queries Drawsy's Hydra route before the model turn. The backend searches private memory and already-synced connector knowledge in parallel, then supplies only the returned source material to the model without requiring a tag. It remains optional for the model to use and is never presented as an instruction.
 - **Provider-native reads.** Mail, Calendar, Drive, Notion, Slack, GitHub, Read AI, Fireflies, and AWS use capability-specific tools. GitHub supports selected repositories, directories, text files, issues, and pull requests without cloning or writing.
 - **Controlled first-party mutations.** Jira is read-only. Kanban writes still pass through its membership, role, locking, revision, idempotency, and audit path.
 - **Editable canvas operations.** Targeted reads, upserts, deletes, raster insertion/replacement, and selection/region capture preserve normal Excalidraw elements. Existing elements are not deleted by omission.
