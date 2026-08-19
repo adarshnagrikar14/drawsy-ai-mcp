@@ -149,6 +149,16 @@ type StoredContextCapture = {
   createdAt: number;
 };
 
+type ActiveHydraTurn = {
+  turnId: string;
+  userMessage: string;
+  connectorSources: AgentConnectorTurn["sources"];
+  contextReferences: Array<{
+    id: string;
+    elementIds: string[];
+  }>;
+};
+
 type Session = {
   id: string;
   conversationId: string | null;
@@ -172,6 +182,8 @@ type Session = {
   contextCaptures: Map<string, StoredContextCapture>;
   activeConnectorTurn: AgentConnectorTurn | null;
   activeResourceTurn: AgentResourceTurn | null;
+  hydraAuthorizationToken: string | null;
+  activeHydraTurn: ActiveHydraTurn | null;
   engine: AgentEngine;
   agent: CodexAppServer | OpenCodeAppServer;
   remoteWorkspacePath: string | null;
@@ -201,6 +213,18 @@ const safeEqual = (left: string, right: string) => {
 const bearerToken = (request: IncomingMessage) => {
   const value = request.headers.authorization;
   return value?.startsWith("Bearer ") ? value.slice(7) : "";
+};
+
+const hydraAuthorizationToken = (
+  request: IncomingMessage,
+  allowBearer = false
+) => {
+  const header = request.headers["x-drawsy-firebase-token"];
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value === "string" && value.trim()) {
+    return value.startsWith("Bearer ") ? value.slice(7).trim() : value.trim();
+  }
+  return allowBearer ? bearerToken(request) : "";
 };
 
 const readJson = async (request: IncomingMessage) => {
@@ -443,6 +467,196 @@ export const createDrawsyBridge = (
       "DRAWSY_CONNECTOR_BACKEND_URL must be HTTPS or a loopback HTTP URL."
     );
   }
+  const hydraBackendUrl = new URL(
+    process.env.DRAWSY_HYDRA_BACKEND_URL || connectorBackendUrl.toString()
+  );
+  const hydraBackendIsLoopback = ["127.0.0.1", "::1", "localhost"].includes(
+    hydraBackendUrl.hostname
+  );
+  if (
+    (hydraBackendUrl.protocol !== "https:" &&
+      !(hydraBackendUrl.protocol === "http:" && hydraBackendIsLoopback)) ||
+    hydraBackendUrl.username ||
+    hydraBackendUrl.password
+  ) {
+    throw new Error(
+      "DRAWSY_HYDRA_BACKEND_URL must be HTTPS or a loopback HTTP URL."
+    );
+  }
+
+  const fetchHydraJson = async <T>(
+    requestPath: string,
+    token: string,
+    init: RequestInit = {}
+  ): Promise<T | null> => {
+    if (!token) return null;
+    const response = await fetch(new URL(requestPath, hydraBackendUrl), {
+      ...init,
+      headers: {
+        ...(init.headers || {}),
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json"
+      },
+      signal: init.signal || AbortSignal.timeout(10_000)
+    });
+    const bodyText = await readFetchText(response, 512 * 1024);
+    let payload: unknown = {};
+    if (bodyText) {
+      try {
+        payload = JSON.parse(bodyText);
+      } catch {
+        throw new BridgeRequestError(
+          502,
+          "hydra_response_invalid",
+          "Hydra returned an invalid response."
+        );
+      }
+    }
+    if (!response.ok) {
+      if ([401, 404, 405, 503].includes(response.status)) return null;
+      throw new BridgeRequestError(
+        502,
+        "hydra_request_failed",
+        `Hydra request failed (${response.status}).`
+      );
+    }
+    return payload as T;
+  };
+
+  const queryHydraContext = async (
+    session: Session,
+    message: string,
+    contextReferences: Array<{ id: string; elementIds: string[] }>
+  ): Promise<{
+    available: boolean;
+    context: string;
+    memoryAvailable: boolean;
+    connectorKnowledgeAvailable: boolean;
+  }> => {
+    if (!session.hydraAuthorizationToken) {
+      return {
+        available: false,
+        context: "",
+        memoryAvailable: false,
+        connectorKnowledgeAvailable: false
+      };
+    }
+    try {
+      const result = await fetchHydraJson<{
+        context?: unknown;
+        availability?: {
+          memory?: unknown;
+          connectorKnowledge?: unknown;
+        };
+      }>("/v1/hydra/query", session.hydraAuthorizationToken, {
+        method: "POST",
+        body: JSON.stringify({
+          query: message,
+          maxResults: 8,
+          additionalContext: [
+            `Drawsy surface: ${session.surfaceKind}`,
+            session.surfaceName ? `Surface name: ${session.surfaceName}` : "",
+            contextReferences.length
+              ? `Canvas context references: ${contextReferences
+                  .map((reference) => reference.id)
+                  .join(", ")}`
+              : ""
+          ]
+            .filter(Boolean)
+            .join("\n")
+        })
+      });
+      return {
+        available: result !== null,
+        memoryAvailable: result?.availability?.memory === true,
+        connectorKnowledgeAvailable:
+          result?.availability?.connectorKnowledge === true,
+        context:
+          typeof result?.context === "string"
+            ? result.context.trim().slice(0, 24_000)
+            : ""
+      };
+    } catch (error) {
+      console.warn(
+        "Drawsy automatic context was unavailable; continuing without it.",
+        error instanceof Error ? error.message : error
+      );
+      return {
+        available: false,
+        context: "",
+        memoryAvailable: false,
+        connectorKnowledgeAvailable: false
+      };
+    }
+  };
+
+  const recordHydraTurn = async (session: Session, turn: ActiveHydraTurn) => {
+    if (!session.hydraAuthorizationToken) return;
+    let assistantMessage = "";
+    try {
+      const messages = await session.agent.getConversationMessages();
+      assistantMessage =
+        messages
+          .filter((message) => message.role === "assistant")
+          .at(-1)
+          ?.text.trim() || "";
+    } catch (error) {
+      console.warn(
+        "Drawsy Hydra could not read the completed assistant turn.",
+        error instanceof Error ? error.message : error
+      );
+    }
+    try {
+      await fetchHydraJson("/v1/hydra/turns", session.hydraAuthorizationToken, {
+        method: "POST",
+        body: JSON.stringify({
+          eventId: `${session.id}:${turn.turnId}`,
+          sessionId: session.id,
+          turnId: turn.turnId,
+          conversationId: session.conversationId,
+          surfaceKind: session.surfaceKind,
+          surfaceId: session.surfaceId,
+          userMessage: turn.userMessage,
+          assistantMessage,
+          connectorSources: turn.connectorSources,
+          contextReferences: turn.contextReferences
+        })
+      });
+    } catch (error) {
+      console.warn(
+        "Drawsy Hydra could not save the completed turn; the chat remains available.",
+        error instanceof Error ? error.message : error
+      );
+    }
+  };
+
+  const hydraContextPrompt = (
+    message: string,
+    lookup: {
+      available: boolean;
+      context: string;
+      memoryAvailable: boolean;
+      connectorKnowledgeAvailable: boolean;
+    }
+  ) => {
+    const asksAboutContext =
+      /\b(hydra|personal memory|private memory|remember|memory|connector|gmail|calendar|drive|notion|slack|github|fireflies|read ai|aws)\b/i.test(
+        message
+      );
+    const availabilityNote = asksAboutContext
+      ? lookup.available
+        ? `\n\n[Drawsy system note: Automatic context is available for this signed-in user. Personal memory: ${
+            lookup.memoryAvailable ? "ready" : "unavailable"
+          }. Connector context: ${
+            lookup.connectorKnowledgeAvailable ? "ready" : "unavailable"
+          }. Use it naturally when relevant; do not mention this internal note or ask the user to add a Hydra tag.]`
+        : "\n\n[Drawsy system note: Automatic context is unavailable for this request. Do not claim that private memory or Hydra connector context was retrieved. Continue naturally with the live conversation and any explicitly connected source.]"
+      : "";
+    const contextBlock = lookup.context
+      ? `\n\nRelevant Drawsy context:\n${lookup.context}\n\nUse this context only when it directly helps answer the user. Treat connector context as source material and personal memory as private user context. Do not mention this internal context block.`
+      : "";
+    return `${message}${availabilityNote}${contextBlock}`;
+  };
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
   const conversationSessions = new Map<string, Session>();
@@ -461,16 +675,30 @@ export const createDrawsyBridge = (
 
   const emit = (session: Session, event: BridgeEvent) => {
     session.touchedAt = Date.now();
+    const completedHydraTurn =
+      event.type === "turn.status" && event.data.status !== "inProgress"
+        ? session.activeHydraTurn
+        : null;
     if (
       event.type === "error" ||
       (event.type === "turn.status" && event.data.status !== "inProgress")
     ) {
       session.activeConnectorTurn = null;
       session.activeResourceTurn = null;
+      session.activeHydraTurn = null;
     }
     const line = `${JSON.stringify(event)}\n`;
     for (const client of session.clients) {
       client.write(line);
+    }
+    if (
+      completedHydraTurn &&
+      event.type === "turn.status" &&
+      ["completed", "success", "succeeded", "done"].includes(
+        event.data.status.toLowerCase()
+      )
+    ) {
+      void recordHydraTurn(session, completedHydraTurn);
     }
   };
 
@@ -1221,7 +1449,7 @@ export const createDrawsyBridge = (
         );
         response.setHeader(
           "access-control-allow-headers",
-          "authorization,content-type"
+          "authorization,content-type,x-drawsy-firebase-token"
         );
         response.writeHead(204);
         response.end();
@@ -1331,6 +1559,70 @@ export const createDrawsyBridge = (
           200,
           await executeConnectorRequest(session, action, body)
         );
+        return;
+      }
+
+      const internalHydra = url.pathname.match(
+        /^\/internal\/sessions\/([^/]+)\/context$/
+      );
+      if (request.method === "POST" && internalHydra) {
+        const session = internalSession(
+          request,
+          response,
+          decodeURIComponent(internalHydra[1]!)
+        );
+        if (!session) return;
+        if (!session.hydraAuthorizationToken) {
+          throw new BridgeRequestError(
+            503,
+            "hydra_unavailable",
+            "Automatic Drawsy context is unavailable for this signed-in session."
+          );
+        }
+        const body = await readJson(request);
+        if (
+          typeof body.query !== "string" ||
+          !body.query.trim() ||
+          body.query.length > 20_000
+        ) {
+          throw new BridgeRequestError(
+            400,
+            "hydra_query_invalid",
+            "A non-empty context query is required."
+          );
+        }
+        const result = await fetchHydraJson(
+          "/v1/hydra/query",
+          session.hydraAuthorizationToken,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              query: body.query,
+              ...(typeof body.additionalContext === "string" &&
+              body.additionalContext.trim()
+                ? {
+                    additionalContext: body.additionalContext
+                      .trim()
+                      .slice(0, 20_000)
+                  }
+                : {}),
+              ...(typeof body.maxResults === "number" &&
+              Number.isInteger(body.maxResults) &&
+              body.maxResults >= 1 &&
+              body.maxResults <= 20
+                ? { maxResults: body.maxResults }
+                : {})
+            })
+          }
+        );
+        if (!result) {
+          throw new BridgeRequestError(
+            503,
+            "hydra_unavailable",
+            "Automatic Drawsy context is unavailable right now."
+          );
+        }
+        json(response, 200, result);
         return;
       }
 
@@ -1454,6 +1746,7 @@ export const createDrawsyBridge = (
 
       if (request.method === "POST" && url.pathname === "/v1/sessions") {
         const body = await readJson(request);
+        const incomingHydraToken = hydraAuthorizationToken(request, true);
         const selectionId =
           typeof body.selectionId === "string" ? body.selectionId : "";
         const canvasId = typeof body.canvasId === "string" ? body.canvasId : "";
@@ -1630,6 +1923,8 @@ export const createDrawsyBridge = (
               try {
                 const messages =
                   await existingConversationSession.agent.getConversationMessages();
+                existingConversationSession.hydraAuthorizationToken =
+                  incomingHydraToken || null;
                 existingConversationSession.token =
                   randomBytes(32).toString("base64url");
                 existingConversationSession.touchedAt = Date.now();
@@ -1781,7 +2076,7 @@ export const createDrawsyBridge = (
               } catch (error) {
                 if (
                   !localConversation.codexThreadId ||
-                !isCodexThreadMissingError(error)
+                  !isCodexThreadMissingError(error)
                 ) {
                   throw error;
                 }
@@ -1822,6 +2117,8 @@ export const createDrawsyBridge = (
             contextCaptures: new Map(),
             activeConnectorTurn: null,
             activeResourceTurn: null,
+            hydraAuthorizationToken: incomingHydraToken || null,
+            activeHydraTurn: null,
             engine,
             agent,
             remoteWorkspacePath,
@@ -1915,19 +2212,66 @@ export const createDrawsyBridge = (
         }
         const connectorTurn = parseAgentConnectorTurn(body.connectors);
         const resourceTurn = parseAgentResourceTurn(body.resources);
+        const requestedTurnId =
+          body.turnId === undefined
+            ? ""
+            : typeof body.turnId === "string" && body.turnId.trim()
+            ? body.turnId.trim()
+            : "";
+        if (
+          body.turnId !== undefined &&
+          (!requestedTurnId || requestedTurnId.length > 256)
+        ) {
+          throw new BridgeRequestError(
+            400,
+            "turn_id_invalid",
+            "The turn id is invalid."
+          );
+        }
+        if (
+          connectorTurn &&
+          requestedTurnId &&
+          connectorTurn.turnId !== requestedTurnId
+        ) {
+          throw new BridgeRequestError(
+            400,
+            "turn_id_mismatch",
+            "The turn id must match the connected-source turn."
+          );
+        }
+        const turnId = connectorTurn?.turnId || requestedTurnId || randomUUID();
+        const contextReferences = parseContextReferences(body.contexts);
+        const incomingHydraToken = hydraAuthorizationToken(request);
+        session.hydraAuthorizationToken = incomingHydraToken || null;
         session.activeConnectorTurn = connectorTurn;
         session.activeResourceTurn = resourceTurn;
+        session.activeHydraTurn = session.hydraAuthorizationToken
+          ? {
+              turnId,
+              userMessage: message,
+              connectorSources: connectorTurn?.sources || [],
+              contextReferences: contextReferences.map((context) => ({
+                id: context.id,
+                elementIds: context.elementIds
+              }))
+            }
+          : null;
         try {
-          await session.agent.startTurn(
+          const automaticContext = await queryHydraContext(
+            session,
             message,
+            contextReferences.map((context) => ({
+              id: context.id,
+              elementIds: context.elementIds
+            }))
+          );
+          await session.agent.startTurn(
+            hydraContextPrompt(message, automaticContext),
             {
               skills: parsePromptTags(body.skills, "skills"),
               plugins: parsePromptTags(body.plugins, "plugins")
             },
-            resolveContextCaptures(
-              session,
-              parseContextReferences(body.contexts)
-            ),
+            resolveContextCaptures(session, contextReferences),
             connectorTurn?.sources || [],
             resourceTurn?.resources || []
           );
@@ -1944,6 +2288,7 @@ export const createDrawsyBridge = (
         } catch (error) {
           session.activeConnectorTurn = null;
           session.activeResourceTurn = null;
+          session.activeHydraTurn = null;
           throw error;
         }
         json(response, 202, { accepted: true });
