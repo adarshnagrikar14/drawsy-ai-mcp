@@ -77,6 +77,7 @@ Copy `.env.example` values into the service environment; never commit production
 - `PORT` — bridge port, normally `3031`.
 - `DRAWSY_ALLOWED_ORIGINS` — exact trusted browser origins.
 - `DRAWSY_CONNECTOR_BACKEND_URL` — loopback HTTP for development or HTTPS in production.
+- `DRAWSY_HYDRA_BACKEND_URL` — optional Hydra route URL; defaults to `DRAWSY_CONNECTOR_BACKEND_URL`.
 - `DRAWSY_CANVAS_REQUEST_TIMEOUT_MS` — bounded wait for browser canvas responses.
 - `DRAWSY_REMOTE_WORKSPACES_ROOT` — absolute hosted workspace root; enables remote mode with the preview origin.
 - `DRAWSY_PREVIEW_ORIGIN_TEMPLATE` — HTTPS origin containing exactly one `{token}` placeholder.
