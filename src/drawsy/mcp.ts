@@ -121,6 +121,38 @@ const callConnectorBridge = async (
   return text;
 };
 
+const callHydraBridge = async (body: unknown = {}) => {
+  const response = await fetch(
+    new URL(
+      `/internal/sessions/${encodeURIComponent(sessionId)}/context`,
+      bridgeUrl
+    ),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${sessionSecret}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(35_000)
+    }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    let message = `Drawsy automatic context failed (${response.status}).`;
+    try {
+      const payload = JSON.parse(text) as { error?: { message?: unknown } };
+      if (typeof payload.error?.message === "string") {
+        message = payload.error.message;
+      }
+    } catch {
+      // Keep the status-only error for malformed bridge responses.
+    }
+    throw new Error(message);
+  }
+  return text;
+};
+
 const callResourceBridge = async (body: unknown = {}) => {
   const response = await fetch(
     new URL(
@@ -614,6 +646,45 @@ server.registerTool(
               error instanceof Error
                 ? error.message
                 : "Connected sources could not be listed."
+          }
+        ]
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "search_drawsy_context",
+  {
+    description:
+      "Search the signed-in user's automatic Drawsy context. This may combine private personal memory with already-synced connector knowledge and graph relationships. It is available without a user-selected tag; use it naturally when a question depends on prior chats or connected-source context. Do not present it as an OAuth connector or ask the user to attach Hydra.",
+    inputSchema: z.object({
+      query: z.string().trim().min(1).max(20_000),
+      additionalContext: z.string().trim().max(20_000).optional(),
+      maxResults: z.number().int().min(1).max(20).default(8)
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  async (input) => {
+    try {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await callHydraBridge(input)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              error instanceof Error
+                ? error.message
+                : "Drawsy automatic context could not be searched."
           }
         ]
       };
