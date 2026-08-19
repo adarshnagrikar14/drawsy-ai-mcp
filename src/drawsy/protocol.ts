@@ -205,6 +205,13 @@ export type AgentConnectorSource = {
   accountLabel: string;
 };
 
+export type HydraContextSource = {
+  id: string;
+  label: string;
+  kind: "connector" | "memory";
+  capability: ConnectorCapability | null;
+};
+
 export type AgentConnectorGrant = {
   connectionId: string;
   grant: string;
@@ -233,6 +240,10 @@ export type BridgeEvent =
     }
   | { type: "assistant.delta"; data: { delta: string; itemId: string } }
   | { type: "assistant.final"; data: { text: string; itemId: string } }
+  | {
+      type: "hydra.sources";
+      data: { turnId: string; sources: HydraContextSource[] };
+    }
   | { type: "turn.status"; data: { status: string; error?: string } }
   | {
       type: "tool.status";
