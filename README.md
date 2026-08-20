@@ -6,11 +6,19 @@ grants, Codex/OpenCode, and automatic signed-in Hydra context without turning
 unrelated workspace data into ambient context.
 
 <p align="center">
-  <a href="https://github.com/adarshnagrikar14/drawsy-ai/tree/feat-hyda-hack">Frontend branch</a>
+  <a href="https://alpha.drawsyai.tech">Hydra alpha test</a>
+  · <a href="https://alpha.drawsyai.tech/mcp/health">Alpha MCP health</a>
+  · <a href="https://github.com/adarshnagrikar14/drawsy-ai/tree/feat-hyda-hack">Frontend branch</a>
   · <a href="https://github.com/adarshnagrikar14/drawsy-ai-backend/tree/feat-hyda-hack">Backend branch</a>
+  · <a href="https://github.com/adarshnagrikar14/hydradb/tree/hydra-drawsy-alpha-build">Drawsy HydraDB fork branch</a>
   · <a href="https://github.com/hydra-db/hydradb">HydraDB OSS</a>
   · <a href="https://docs.hydradb.com/AGENTS">HydraDB AGENTS</a>
 </p>
+
+The deployed Track 03 test surface is [alpha.drawsyai.tech](https://alpha.drawsyai.tech).
+The alpha MCP health check is [alpha.drawsyai.tech/mcp/health](https://alpha.drawsyai.tech/mcp/health).
+The bridge is reached through the alpha gateway and calls the isolated alpha
+backend; it does not expose HydraDB or provider credentials publicly.
 
 ## Bridge role
 
