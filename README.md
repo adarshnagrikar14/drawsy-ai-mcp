@@ -19,6 +19,11 @@ backend Hydra contract; the backend owns Firebase identity, user isolation,
 HydraDB OSS memory, hosted Hydra connector knowledge, sync state, and provider
 credentials.
 
+The actual chain is **frontend → MCP bridge → backend → HydraDB**. The backend’s
+`HydraOssClient` talks to the forked local graph-node for personal memory; its
+hosted Hydra client handles connector knowledge. The MCP only receives the
+backend’s scoped context and source metadata.
+
 ```mermaid
 flowchart LR
   UI["Drawsy canvas + chat"] <--> Bridge["MCP bridge"]
@@ -175,26 +180,6 @@ Hydra is not the whole agent contract:
 
 This separation keeps Hydra useful without making every prompt a database query
 or every connector connection a forced tool call.
-
-## Hack Hydra submission notes
-
-Track 03 asks for meaningful use of HydraDB OSS, an original build from Aug 12–20,
-2026, an inspectable repository with an open-source license, a short demo video,
-and the [official submission form](https://forms.gle/WEwqEmmN7Bkp4HyJ6). See the
-[Hack Hydra rules](https://hackhydra.hydradb.com/) before recording the demo.
-Demonstrate:
-
-1. a canvas decision written through a completed signed-in turn;
-2. a later conversation receiving the memory automatically;
-3. visible Memory/Hydra source markers in chat;
-4. connector knowledge retrieved from hosted Hydra when a connected source is
-   relevant; and
-5. a live connector being used only when Hydra lacks the required freshness or
-   capability.
-
-The MCP repository is currently access-controlled. Before using it as a public
-submission repository, complete the security review, remove deployment-only
-material, publish an explicit license, and keep the `feat-hyda-hack` branch URL.
 
 ## OSS and attribution
 
