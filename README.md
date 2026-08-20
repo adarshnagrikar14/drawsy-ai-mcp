@@ -204,6 +204,14 @@ HydraDB is an external open-source project used as infrastructure:
 - [HydraDB AGENTS guide](https://docs.hydradb.com/AGENTS)
 - [HydraDB v2 introduction](https://docs.hydradb.com/get-started/v2/introduction)
 
+Local OSS validation uses the [Drawsy HydraDB fork](https://github.com/adarshnagrikar14/hydradb).
+The fork adds the local conditional object-store adapter, long-value property
+index guards, graph-node readiness/client telemetry, and related runtime/test
+changes. See the immutable [fork diff](https://github.com/adarshnagrikar14/hydradb/compare/6a2fbb192f37f51a93690a2ae2d2f5e27e6e4219...5f6ca146e2789234e231f228ca180689f991d1af)
+and [local adapter commit](https://github.com/adarshnagrikar14/hydradb/commit/e594d8b37d7611ba1ed08c3a96db4030a46e49ca).
+The fork retains HydraDB’s AGPL-3.0 license. The MCP does not bypass the
+backend to talk to this fork directly.
+
 Drawsy’s MCP began from [Excalidraw MCP](https://github.com/excalidraw/excalidraw-mcp);
 the Drawsy bridge, Hydra lifecycle, source events, grants, runtime boundaries,
 and product protocol are the work in this branch. The package metadata declares
