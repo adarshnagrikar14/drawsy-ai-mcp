@@ -475,6 +475,17 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       updatedAt: 0
     });
 
+    const sameOriginPreferences = await fetch(
+      `${bridge.address}/v1/preferences`,
+      {
+        headers: {
+          "x-forwarded-host": "localhost:3001",
+          "x-forwarded-proto": "http"
+        }
+      }
+    );
+    assert.equal(sameOriginPreferences.status, 200);
+
     const savedPreferences = await fetch(`${bridge.address}/v1/preferences`, {
       method: "PUT",
       headers,

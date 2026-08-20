@@ -418,6 +418,26 @@ const parseContextReferences = (value: unknown): CanvasContextReference[] => {
   return contexts;
 };
 
+const firstHeaderValue = (value: string | string[] | undefined) =>
+  (Array.isArray(value) ? value[0] : value)?.split(",", 1)[0]?.trim() || null;
+
+const forwardedSameOrigin = (
+  request: IncomingMessage,
+  allowedOrigins: Set<string>
+) => {
+  const protocol =
+    firstHeaderValue(request.headers["x-forwarded-proto"]) ||
+    ((request.socket as typeof request.socket & { encrypted?: boolean }).encrypted
+      ? "https"
+      : "http");
+  const host =
+    firstHeaderValue(request.headers["x-forwarded-host"]) ||
+    firstHeaderValue(request.headers.host);
+  if (!host) return null;
+  const candidate = `${protocol}://${host}`;
+  return allowedOrigins.has(candidate) ? candidate : null;
+};
+
 export const createDrawsyBridge = (
   options: {
     port?: number;
@@ -776,13 +796,17 @@ export const createDrawsyBridge = (
     response: ServerResponse
   ) => {
     const origin = request.headers.origin;
-    if (!origin || !allowedOrigins.has(origin)) {
+    const sameOrigin = !origin
+      ? forwardedSameOrigin(request, allowedOrigins)
+      : null;
+    const effectiveOrigin = origin || sameOrigin;
+    if (!effectiveOrigin || !allowedOrigins.has(effectiveOrigin)) {
       json(response, 403, {
         error: { code: "origin_denied", message: "Origin is not allowed." }
       });
       return false;
     }
-    response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("access-control-allow-origin", effectiveOrigin);
     response.setHeader("vary", "Origin");
     return true;
   };
