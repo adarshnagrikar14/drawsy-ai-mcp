@@ -142,7 +142,9 @@ For the full stack, use the matching
 [frontend branch](https://github.com/adarshnagrikar14/drawsy-ai/tree/feat-hyda-hack)
 and [backend branch](https://github.com/adarshnagrikar14/drawsy-ai-backend/tree/feat-hyda-hack)
 instructions. The backend starts the Hydra routes only when its authenticated
-Hydra configuration is enabled.
+Hydra configuration is enabled. The backend’s local memory target is the
+[Drawsy HydraDB fork](https://github.com/adarshnagrikar14/hydradb), not an
+unmodified upstream checkout.
 
 ## Verify
 
